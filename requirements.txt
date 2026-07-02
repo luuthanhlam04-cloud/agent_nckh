@@ -1,0 +1,38 @@
+# ─── Tầng Giao diện & Tương tác Windows ──────────────────────────────────────
+PyQt6
+keyboard
+pyaudio
+edge-tts
+pyperclip
+win11toast
+
+# ─── Tầng AI, LLM & Router ───────────────────────────────────────────────────
+google-generativeai
+openai
+pydantic
+
+# ─── Tầng Database Lai ───────────────────────────────────────────────────────
+qdrant-client
+neo4j
+
+# ─── Tầng Nhúng Model & NPU ──────────────────────────────────────────────────
+sentence-transformers
+openvino
+openvino-telemetry
+optimum[openvino]
+
+# ─── Tầng Tiêu hóa Tài liệu & Xuất báo cáo ─────────────────────────────────
+PyMuPDF
+python-docx
+python-pptx
+Pillow
+
+# ─── Tầng Tự động hóa ngầm ───────────────────────────────────────────────────
+watchdog
+APScheduler
+playwright
+langgraph
+duckduckgo-search
+
+# ─── Tiện ích & Cấu hình ─────────────────────────────────────────────────────
+python-dotenv
