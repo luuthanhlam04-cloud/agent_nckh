@@ -1,0 +1,30 @@
+# Môi trường ảo Python
+venv/
+env/
+.env
+
+# Cache và file tạm
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# IDE và OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs và Database cục bộ
+*.log
+agent.log
+qdrant_storage/
+
+# Thư mục Obsidian (Tuỳ chọn: nếu bạn không muốn đưa dữ liệu cá nhân lên GitHub)
+Obsidian_Vault/01_Inbox/*
+Obsidian_Vault/02_Knowledge/*
+Obsidian_Vault/03_Agent_Memory/*
+!Obsidian_Vault/01_Inbox/.gitkeep
+!Obsidian_Vault/02_Knowledge/.gitkeep
+!Obsidian_Vault/03_Agent_Memory/.gitkeep
