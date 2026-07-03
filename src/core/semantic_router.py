@@ -280,18 +280,23 @@ Phân tích và trả về JSON routing:"""
                     logger.info(f"[SemanticRouter] Auto-Correction thành công ở lần {attempt}.")
                 return parsed
 
-            except (json.JSONDecodeError, Exception) as e:
-                last_error = str(e)
+            except json.JSONDecodeError as e:
+                # Loi parse JSON thuat su -> retry voi Gemini tu sua
+                last_error = f"JSON parse error: {e}"
                 logger.warning(
-                    f"[SemanticRouter] Lần {attempt}/{MAX_CORRECTION_RETRIES}: "
-                    f"JSON lỗi: {last_error[:80]}. Đang yêu cầu Gemini tự sửa..."
+                    "[SemanticRouter] Lan %d/%d: JSON loi: %s. Dang yeu cau Gemini tu sua...",
+                    attempt, MAX_CORRECTION_RETRIES, last_error[:80],
                 )
-                # Lớp 3: Ném lỗi ngược lại cho Gemini tự sửa
+                # Lop 3: Nem loi nguoc lai cho Gemini tu sua
                 system_prompt_combined = (
                     _ROUTER_SYSTEM_PROMPT + "\n\n" + prompt +
-                    f"\n\n[Lỗi lần trước]: JSON không hợp lệ: {last_error}\n"
-                    f"[Yêu cầu]: Sửa lại và chỉ trả về JSON thuần túy."
+                    f"\n\n[Loi lan truoc]: JSON khong hop le: {last_error}\n"
+                    f"[Yeu cau]: Sua lai va chi tra ve JSON thuan tuy."
                 )
+            except Exception as e:
+                # Loi mang/API that su -> khong retry, raise ngay
+                logger.error("[SemanticRouter] Loi mang/API khong mong muon: %s", e)
+                break   # Thoat vong retry, dung fallback intent
 
         logger.error(
             f"[SemanticRouter] Thất bại sau {MAX_CORRECTION_RETRIES} lần. "

@@ -49,12 +49,13 @@ load_dotenv()
 GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
-CRITIQUE_MODEL    = "gemini-1.5-flash"              # Model nhẹ, rẻ cho self-critique
-WORKER_MODEL      = "google/gemini-pro-1.5"          # Model mạnh qua OpenRouter
+CRITIQUE_MODEL    = "gemini-1.5-flash"              # Model nhe, re cho self-critique
+WORKER_MODEL      = "google/gemini-pro-1.5"          # Model manh qua OpenRouter
 OPENROUTER_BASE   = "https://openrouter.ai/api/v1"
-MAX_SEARCH_ITER   = 3                                # Giới hạn vòng lặp DuckDuckGo
-CRITIQUE_THRESHOLD = 8.0                             # Ngưỡng điểm chấp nhận (8/10)
-WEB_SEARCH_MAX_RESULTS = 5                           # Số kết quả tìm kiếm tối đa
+MAX_SEARCH_ITER   = 3                                # Gioi han vong lap DuckDuckGo
+CRITIQUE_THRESHOLD = 8.0                             # Nguong diem chap nhan (8/10)
+WEB_SEARCH_MAX_RESULTS = 5                           # So ket qua tim kiem toi da
+MAX_WEB_IN_PROMPT = 5                                # [I4] Gioi han web results nho vao prompt
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -275,7 +276,18 @@ NGỮ CẢNH RAG TÌM ĐƯỢC:
 Đánh giá chất lượng ngữ cảnh:"""
 
         try:
-            response = self._get_model().generate_content(prompt)
+            # [C2 FIX] Truyen dung system_prompt cho SelfCritiqueAgent
+            # Phien ban cu chi truyen user prompt -> model khong co huong dan cham diem
+            response = self._get_model().models.generate_content(
+                model=CRITIQUE_MODEL,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=_CRITIQUE_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    temperature=0.0,
+                    max_output_tokens=256,
+                ),
+            )
             raw = re.sub(r"```(?:json)?\s*|\s*```", "", response.text.strip())
             data = json.loads(raw)
             result = SelfCritiqueResult.model_validate(data)
@@ -454,14 +466,23 @@ class ReActOrchestrator:
         """
         Bước 5.3: Nhồi ngữ cảnh vào prompt và gọi WorkerEngine sinh câu trả lời.
         """
-        # Tổng hợp ngữ cảnh: RAG local + Web search results
+        # [I4 FIX] Gioi han web_results truoc khi nho vao prompt
+        # Sau 3 vong × 5 ket qua = 15 web results co the vuot token limit 32K
+        all_web = state.get("web_results", [])
+        web_results_capped = all_web[-MAX_WEB_IN_PROMPT:]  # Lay 5 ket qua moi nhat
+        if len(all_web) > MAX_WEB_IN_PROMPT:
+            logger.info(
+                "[ReAct:GENERATE] Cap web results: %d -> %d de tranh vuot token limit.",
+                len(all_web), MAX_WEB_IN_PROMPT,
+            )
+
         rag_text = "\n\n".join(
-            f"[Tài liệu {i+1} | {c.get('source', 'unknown')} trang {c.get('page', 0)}]\n{c.get('text', '')}"
+            f"[Tai lieu {i+1} | {c.get('source', 'unknown')} trang {c.get('page', 0)}]\n{c.get('text', '')}"
             for i, c in enumerate(state.get("context_chunks", []))
         )
         web_text = "\n\n".join(
-            f"[Kết quả web {i+1}]\n{w}"
-            for i, w in enumerate(state.get("web_results", []))
+            f"[Ket qua web {i+1}]\n{w}"
+            for i, w in enumerate(web_results_capped)
         )
 
         context_combined = ""
