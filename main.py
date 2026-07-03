@@ -1,16 +1,17 @@
 """
-main.py - Điểm Khởi chạy Background Daemon (Entry Point)
+main.py - Diem Khoi chay Background Daemon (Entry Point)
 =========================================================
-Luồng khởi động:
-  1. Load cấu hình từ .env
-  2. Khởi tạo HybridRAG (Qdrant Local + Neo4j Cloud) - lazy init
-  3. Khởi động InboxWatcher chạy ngầm giám sát 01_Inbox/
-  4. [Giai đoạn 4] Khởi chạy Spotlight UI (PyQt6) - sẽ thêm sau
-  5. Giữ tiến trình sống mãi cho đến khi nhận tín hiệu tắt (Ctrl+C / SIGTERM)
+Luong khoi dong (Giai doan 4 - Da tich hop PyQt6 Spotlight UI):
+  1. Load cau hinh tu .env
+  2. Khoi tao HybridRAG (Qdrant Local + Neo4j Cloud) - lazy init
+  3. Khoi dong InboxWatcher chay ngam giam sat 01_Inbox/
+  4. Khoi chay Spotlight UI (PyQt6) + System Tray + Global Hotkey
+  5. app.exec() giu tien trinh song (thay the while True)
 
-Yêu cầu hệ thống:
-  - Chạy với quyền Administrator để bắt phím tắt toàn cục (keyboard library).
-  - File .env phải được điền đầy đủ trước khi chạy (xem README.md).
+Yeu cau he thong:
+  - Chay voi quyen Administrator de bat phim tat toan cuc (keyboard library).
+  - File .env phai duoc dien day du truoc khi chay (xem README.md).
+  - PyQt6 phai duoc cai: pip install PyQt6
 """
 
 import os
@@ -19,67 +20,65 @@ import time
 import signal
 import logging
 import gc
+import functools
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-# ─── Cấu hình Logging toàn cục ────────────────────────────────────────────────
+# --- Cau hinh Logging toan cuc ---
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
     datefmt="%H:%M:%S",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        # Ghi log ra file để debug Production
         logging.FileHandler("agent.log", encoding="utf-8"),
     ],
 )
 logger = logging.getLogger("Main")
 
-# ─── Tải biến môi trường ───────────────────────────────────────────────────────
+# --- Tai bien moi truong ---
 load_dotenv()
 
-# ─── Đường dẫn Obsidian Vault ─────────────────────────────────────────────────
-# Ưu tiên đọc từ .env, dự phòng dùng thư mục Obsidian_Vault trong dự án
+# --- Duong dan Obsidian Vault ---
 VAULT_PATH = os.getenv(
     "OBSIDIAN_VAULT_PATH",
     os.path.join(os.path.dirname(__file__), "Obsidian_Vault"),
 )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Khởi tạo các thành phần hệ thống
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+#  Khoi tao cac thanh phan he thong (Giu nguyen tu Giai doan 1-3)
+# ==============================================================================
+
 def init_database():
     """
-    Khởi tạo kết nối HybridRAG (Qdrant + Neo4j).
-    Trả về instance HybridRAG hoặc None nếu config chưa sẵn sàng.
+    Khoi tao ket noi HybridRAG (Qdrant + Neo4j).
+    Tra ve instance HybridRAG hoac None neu config chua san sang.
     """
     from src.db.hybrid_rag import HybridRAG
 
     neo4j_uri = os.getenv("NEO4J_URI", "")
-    neo4j_password = os.getenv("NEO4J_PASSWORD", "")
 
-    # Kiểm tra config Neo4j
-    if not neo4j_uri or "điền" in neo4j_uri.lower():
+    if not neo4j_uri or "dien" in neo4j_uri.lower():
         logger.warning(
-            "[Main] NEO4J_URI chưa được cấu hình trong .env.\n"
-            "       -> Qdrant vẫn hoạt động, nhưng Neo4j sẽ bị skip.\n"
-            "       -> Điền thông tin Neo4j Aura vào .env để kích hoạt đồ thị tri thức."
+            "[Main] NEO4J_URI chua duoc cau hinh trong .env.\n"
+            "       -> Qdrant van hoat dong, nhung Neo4j se bi skip.\n"
+            "       -> Dien thong tin Neo4j Aura vao .env de kich hoat do thi tri thuc."
         )
         return None, HybridRAG()
 
     try:
         rag = HybridRAG()
-        logger.info("[Main] ✅ HybridRAG (Qdrant + Neo4j) đã sẵn sàng.")
+        logger.info("[Main] HybridRAG (Qdrant + Neo4j) da san sang.")
         return None, rag
     except Exception as e:
-        logger.error(f"[Main] ❌ Lỗi khởi tạo HybridRAG: {e}")
+        logger.error(f"[Main] Loi khoi tao HybridRAG: {e}")
         return None, None
 
 
 def init_watcher(hybrid_rag):
-    """Khởi động InboxWatcher chạy ngầm."""
+    """Khoi dong InboxWatcher chay ngam."""
     from src.utils.watchdog_listener import start_watcher
 
     watcher = start_watcher(vault_path=VAULT_PATH, hybrid_rag=hybrid_rag)
@@ -89,23 +88,24 @@ def init_watcher(hybrid_rag):
 
 def init_core_ai(hybrid_rag):
     """
-    Khởi tạo các thành phần AI lõi (Giai đoạn 3).
-    Trả về tuple (router, orchestrator) sẵn sàng phục vụ câu hỏi.
+    Khoi tao cac thanh phan AI loi (Giai doan 3).
+    Tra ve tuple (router, memory, orchestrator).
     """
     from src.core.semantic_router import SemanticRouter, ConversationMemory
     from src.core.orchestrator import ReActOrchestrator
 
     router = SemanticRouter()
-    memory = ConversationMemory()  # Sliding Window N=5, shared across calls
+    memory = ConversationMemory()
     orchestrator = ReActOrchestrator(hybrid_rag=hybrid_rag)
 
     logger.info("[Main] SemanticRouter + ReActOrchestrator da san sang.")
     return router, memory, orchestrator
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Coordinator - Điểm nối giữa Router và Orchestrator
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+#  Coordinator - Diem noi giua Router va Orchestrator (Giu nguyen tu Giai doan 3)
+# ==============================================================================
+
 def process_user_input(
     user_input: str,
     router,
@@ -113,104 +113,116 @@ def process_user_input(
     orchestrator,
 ) -> str:
     """
-    Coordinator trung tâm kết nối toàn bộ luồng xử lý câu hỏi.
+    Coordinator trung tam ket noi toan bo luong xu ly cau hoi.
 
-    Luồng điệu phối:
+    Luong dieu phoi:
       user_input
-        ↓
-      SemanticRouter.route()     -> Phân loại intent + trích xuất keywords
-        ↓
-      [research_query]           -> ReActOrchestrator.run() -> answer
-      [os_control]               -> Placeholder (Giai đoạn 4 thêm OS automation)
-      [export_docx]              -> Placeholder (Giai đoạn 5 thêm Word exporter)
-      [daily_task]               -> Placeholder (Giai đoạn 4 thêm APScheduler)
-        ↓
-      memory.add(Q, A)           -> Cập nhật Sliding Window
-        ↓
-      return answer
+        -> SemanticRouter.route()  -> Phan loai intent
+        -> [research_query]        -> ReActOrchestrator.run()
+        -> [os_control]            -> Da xu ly truoc boi RegexInterceptor
+        -> [export_docx]           -> Placeholder (Giai doan 5)
+        -> [daily_task]            -> Placeholder (Giai doan 5)
+        -> memory.add(Q, A)        -> Cap nhat Sliding Window
+        -> return answer
     """
     try:
-        # Bước 1: Semantic Router phân loại ý định
         intent = router.route(user_input=user_input, memory=memory)
         logger.info(f"[Coordinator] Intent: {intent.intent_type}")
 
-        # Bước 2: Rẽ nhánh theo loại intent
         if intent.intent_type == "research_query":
             answer = orchestrator.run(user_input=user_input)
 
         elif intent.intent_type == "os_control":
-            # Placeholder - sẽ triển khai ở Giai đoạn 4 (Spotlight UI + keyboard hook)
             payload = intent.os_action_payload
-            app = payload.app_name if payload else "unknown"
-            answer = f"[OS Control] Lenh mo '{app}' da duoc ghi nhan. Chuc nang se kha dung o Giai doan 4."
+            app_name = payload.app_name if payload else "unknown"
+            answer = f"Lenh mo '{app_name}' da duoc ghi nhan."
 
         elif intent.intent_type == "export_docx":
-            # Placeholder - sẽ triển khai ở Giai đoạn 5 (Word Exporter)
-            answer = f"[Export] Xuat bao cao chu de '{intent.topic}' se kha dung o Giai doan 5."
+            answer = f"Xuat bao cao ve '{intent.topic}' se kha dung o Giai doan 5."
 
         elif intent.intent_type == "daily_task":
-            # Placeholder - sẽ triển khai ở Giai đoạn 4 (APScheduler)
-            answer = "[Daily Task] Tac vu hang ngay se kha dung o Giai doan 4."
+            answer = "Tac vu hang ngay se kha dung o Giai doan 5."
 
         else:
-            # Fallback: luôn chạy qua Orchestrator nếu không xác định được intent
             answer = orchestrator.run(user_input=user_input)
 
-        # Bước 3: Cập nhật Sliding Window memory
         memory.add(user_input=user_input, agent_response=answer)
         return answer
 
     except Exception as e:
-        error_msg = f"He thong gap su co khi xu ly cau hoi: {str(e)[:100]}"
+        error_msg = f"He thong gap su co: {str(e)[:100]}"
         logger.error(f"[Coordinator] Loi: {e}")
-        # Vẫn cập nhật memory với thông báo lỗi để giữ liên tục
-        memory.add(user_input=user_input, agent_response=error_msg)
+        try:
+            memory.add(user_input=user_input, agent_response=error_msg)
+        except Exception:
+            pass
         return error_msg
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Xử lý tín hiệu dừng hệ thống (Graceful Shutdown)
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+#  Don dep tai nguyen (Graceful Shutdown)
+# ==============================================================================
+
+def _cleanup_components(components: dict):
+    """Don dep tai nguyen tap trung. Goi tu ca SIGTERM va finally block."""
+    # Don Worker Threads cua UI truoc
+    if components.get("window"):
+        try:
+            components["window"].cleanup()
+        except Exception:
+            pass
+
+    if components.get("watcher"):
+        try:
+            components["watcher"].stop()
+        except Exception:
+            pass
+
+    if components.get("orchestrator"):
+        try:
+            components["orchestrator"].close()
+        except Exception:
+            pass
+
+    if components.get("rag"):
+        try:
+            components["rag"].close()
+        except Exception:
+            pass
+
+    gc.collect()
+    logger.info("[Main] Da don sach tai nguyen.")
+
+
+
 def create_shutdown_handler(components: dict):
-    """
-    Tạo hàm xử lý tín hiệu SIGINT/SIGTERM để dọn dẹp tài nguyên sạch sẽ.
-    """
+    """Tao ham xu ly tin hieu SIGTERM de don dep tai nguyen."""
     def shutdown(signum, frame):
         logger.info("[Main] Nhan tin hieu dung. Dang don dep...")
-
-        if components.get("watcher"):
-            components["watcher"].stop()
-
-        if components.get("orchestrator"):
-            components["orchestrator"].close()
-
-        if components.get("rag"):
-            components["rag"].close()
-
-        gc.collect()
+        _cleanup_components(components)
         logger.info("[Main] He thong da dung an toan. Tam biet!")
         sys.exit(0)
-
     return shutdown
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MAIN
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+#  MAIN - Entry Point tich hop PyQt6 (Giai doan 4)
+# ==============================================================================
+
 def main():
     logger.info("=" * 60)
     logger.info("  Digital Scholar - Last Agent V3.0")
-    logger.info("  Khoi dong he thong Background Daemon...")
+    logger.info("  Giai doan 4: Spotlight UI + Zero-Cost Interceptor")
     logger.info("=" * 60)
 
     components = {}
 
-    # --- Buoc 1: Khoi tao Database ---
+    # -- Buoc 1: Khoi tao Database --
     logger.info("[Main] [1/4] Dang ket noi Database...")
     _, rag = init_database()
     components["rag"] = rag
 
-    # --- Buoc 2: Khoi dong InboxWatcher ---
+    # -- Buoc 2: Khoi dong InboxWatcher --
     logger.info("[Main] [2/4] Dang khoi dong InboxWatcher...")
     try:
         watcher = init_watcher(rag)
@@ -218,36 +230,103 @@ def main():
     except Exception as e:
         logger.error(f"[Main] Loi khoi dong Watcher: {e}")
 
-    # --- Buoc 3: Khoi tao Core AI (SemanticRouter + ReActOrchestrator) ---
+    # -- Buoc 3: Khoi tao Core AI --
     logger.info("[Main] [3/4] Dang khoi tao Core AI...")
+    router = memory = orchestrator = None
     try:
         router, memory, orchestrator = init_core_ai(rag)
-        components["router"] = router
-        components["memory"] = memory
+        components["router"]       = router
+        components["memory"]       = memory
         components["orchestrator"] = orchestrator
     except Exception as e:
         logger.error(f"[Main] Loi khoi tao Core AI: {e}")
-        router = memory = orchestrator = None
 
-    # --- Buoc 4: [Placeholder] Spotlight UI - Giai doan 4 ---
-    logger.info("[Main] [4/4] Spotlight UI: Chua kha dung (Giai doan 4).")
+    # Dang ky SIGTERM handler
+    signal.signal(signal.SIGTERM, create_shutdown_handler(components))
 
-    # --- Dang ky Graceful Shutdown ---
-    shutdown_handler = create_shutdown_handler(components)
-    signal.signal(signal.SIGINT, shutdown_handler)
-    signal.signal(signal.SIGTERM, shutdown_handler)
+    # -- Buoc 4: Khoi chay Spotlight UI (PyQt6) --
+    logger.info("[Main] [4/4] Dang khoi tao Spotlight UI (PyQt6)...")
+    exit_code = 0
 
-    # --- Thong bao he thong san sang ---
-    logger.info("=" * 60)
-    logger.info("  Digital Scholar dang chay ngam.")
-    logger.info(f"  Inbox: {os.path.join(VAULT_PATH, '01_Inbox')}")
-    logger.info("  Router + Orchestrator: " + ("SAN SANG" if orchestrator else "CHUA CO API KEY"))
-    logger.info("  Nhan Ctrl+C de dung he thong.")
-    logger.info("=" * 60)
+    try:
+        from PyQt6.QtWidgets import QApplication
+        from src.ui.spotlight import SpotlightWindow, GlobalHotkeyThread, setup_system_tray
+        from src.core.regex_interceptor import intercept as regex_intercept
 
-    # --- Giu tien trinh chay mai ---
-    while True:
-        time.sleep(1)
+        # Tao Qt Application
+        # setQuitOnLastWindowClosed(False): app song khi cua so dong (chay ngam qua tray)
+        app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(False)
+        app.setApplicationName("Digital Scholar")
+
+        # Dong goi process_fn de Spotlight goi khong can biet tham so
+        if router and memory and orchestrator:
+            process_fn = functools.partial(
+                process_user_input,
+                router=router,
+                memory=memory,
+                orchestrator=orchestrator,
+            )
+            logger.info("[Main] Core AI san sang phuc vu cau hoi.")
+        else:
+            logger.warning("[Main] Core AI chua san sang (kiem tra API Keys trong .env).")
+            process_fn = None
+
+        # Dong goi intercept_fn voi vault_path co san
+        intercept_fn = functools.partial(regex_intercept, vault_path=VAULT_PATH)
+
+        # Tao cua so Spotlight
+        window = SpotlightWindow(
+            process_fn=process_fn,
+            intercept_fn=intercept_fn,
+            vault_path=VAULT_PATH,
+        )
+        components["window"] = window   # Luu de cleanup() goi khi SIGTERM
+
+        # Thiet lap System Tray Icon
+        tray = setup_system_tray(app, window)
+        components["tray"] = tray
+
+        # Khoi dong Global Hotkey Thread (Ctrl+Space)
+        # LUU Y: Can quyen Administrator tren Windows de hook toan cuc
+        hotkey_thread = GlobalHotkeyThread(parent=app)
+        hotkey_thread.toggle_signal.connect(window.toggle_visibility)
+        hotkey_thread.start()
+        components["hotkey_thread"] = hotkey_thread
+
+        # Thong bao san sang
+        logger.info("=" * 60)
+        logger.info("  Digital Scholar dang chay ngam.")
+        logger.info(f"  Inbox: {os.path.join(VAULT_PATH, '01_Inbox')}")
+        logger.info("  Core AI: " + ("SAN SANG" if process_fn else "CHUA CO API KEY"))
+        logger.info("  Phim tat: Ctrl+Space de bat/tat Spotlight.")
+        logger.info("  Click phai System Tray -> Thoat de dung han.")
+        logger.info("=" * 60)
+
+        # Chay Qt Event Loop (thay the while True: time.sleep(1) cua Giai doan 3)
+        exit_code = app.exec()
+
+    except ImportError as e:
+        # PyQt6 chua cai -> fallback daemon loop khong co UI
+        logger.error(f"[Main] PyQt6 chua cai: {e}")
+        logger.warning("[Main] Fallback: chay daemon khong co UI.")
+        logger.info("  Inbox: " + os.path.join(VAULT_PATH, "01_Inbox"))
+        logger.info("  Core AI: " + ("SAN SANG" if orchestrator else "CHUA CO API KEY"))
+        logger.info("  Nhan Ctrl+C de dung he thong.")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+
+    except Exception as e:
+        logger.error(f"[Main] Loi khoi tao UI: {e}")
+        exit_code = 1
+
+    finally:
+        _cleanup_components(components)
+
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
