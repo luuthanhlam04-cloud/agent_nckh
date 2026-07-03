@@ -184,20 +184,20 @@ class InboxWatcher:
 
     async def _process_queue(self):
         """
-        Coroutine chạy vĩnh viễn, lấy file path từ Queue và xử lý tuần tự.
-        Xử lý tuần tự (không concurrent) để tránh bùng phát Rate Limit API.
+        Coroutine chay vinh vien, lay file path tu Queue va xu ly tuan tu.
+        Xu ly tuan tu (khong concurrent) de tranh bung phat Rate Limit API.
         """
-        logger.info("[Watchdog] Worker Queue đang lắng nghe...")
+        logger.info("[Watchdog] Worker Queue dang lang nghe...")
         while self._running:
             try:
-                # Chờ file mới trong Queue (timeout 1s để có thể kiểm tra _running)
+                # Cho file moi trong Queue (timeout 1s de co the kiem tra _running)
                 file_path = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                 await self._handle_new_file(file_path)
                 self._queue.task_done()
             except asyncio.TimeoutError:
-                continue  # Timeout bình thường, tiếp tục vòng lặp
+                continue  # Timeout binh thuong, tiep tuc vong lap
             except Exception as e:
-                logger.error(f"[Watchdog] Lỗi trong process_queue: {e}")
+                logger.error("[Watchdog] Loi trong process_queue: %s", e)
 
     async def _handle_new_file(self, file_path: str):
         """
@@ -211,9 +211,24 @@ class InboxWatcher:
             file_path: Đường dẫn tuyệt đối đến file mới trong 01_Inbox/.
         """
         path = Path(file_path)
-        logger.info(f"[Watchdog] 🔄 Bắt đầu xử lý: {path.name}")
+        logger.info("[Watchdog] Bat dau xu ly: %s", path.name)
 
         try:
+            # [I1 FIX] Windows race condition: on_created() kich hoat khi file bat dau ghi,
+            # nhung file co the chua ghi xong. Poll size de biet khi nao file on dinh.
+            prev_size = -1
+            for attempt in range(12):   # Toi da 6 giay (12 x 0.5s)
+                await asyncio.sleep(0.5)
+                if not path.exists():
+                    continue
+                curr_size = path.stat().st_size
+                if curr_size > 0 and curr_size == prev_size:
+                    break   # Size on dinh -> file da ghi xong
+                prev_size = curr_size
+            else:
+                logger.warning("[Watchdog] File '%s' khong on dinh sau 6s. Bo qua.", path.name)
+                return
+
             # Bước 1: Import parser (tránh circular import)
             from src.utils.parser import parse_document, PDFParser, PPTXParser
 
@@ -222,10 +237,10 @@ class InboxWatcher:
             chunks = await loop.run_in_executor(None, parse_document, file_path)
 
             if not chunks:
-                logger.warning(f"[Watchdog] Không bóc tách được chunk nào từ: {path.name}")
+                logger.warning("[Watchdog] Khong boc tach duoc chunk nao tu: %s", path.name)
                 return
 
-            logger.info(f"[Watchdog] Bóc tách được {len(chunks)} chunks từ {path.name}")
+            logger.info("[Watchdog] Boc tach duoc %d chunks tu %s", len(chunks), path.name)
 
             # Bước 2: Lưu Markdown sang 02_Knowledge/
             md_output_path = await loop.run_in_executor(
