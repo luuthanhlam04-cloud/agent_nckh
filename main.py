@@ -114,6 +114,7 @@ def process_user_input(
     router,
     memory,
     orchestrator,
+    consolidator=None,
 ) -> str:
     """
     Coordinator trung tam ket noi toan bo luong xu ly cau hoi.
@@ -154,7 +155,21 @@ def process_user_input(
                 answer = f"Lỗi xuất báo cáo: {str(e)[:100]}"
 
         elif intent.intent_type == "daily_task":
-            answer = "Tác vụ hàng ngày sẽ khả dụng ở Giai đoạn 5."
+            # Gọi hàm run_consolidation của Consolidator (chạy trong AIWorker thread)
+            try:
+                from src.services.memory_consolidator import MemoryConsolidator
+                # Ta cần tạo 1 instance tạm (nếu không được pass vào) hoặc
+                # tốt nhất là truyền consolidator vào process_user_input.
+                # Tuy nhiên, do process_user_input chưa có consolidator, ta sẽ
+                # thêm tham số consolidator vào functools.partial.
+                if consolidator:
+                    consolidator.run_consolidation(is_catchup=False)
+                    answer = "Đã tổng hợp bộ nhớ ngắn hạn và lưu vào Profile.md thành công!"
+                else:
+                    answer = "Hệ thống tổng hợp bộ nhớ chưa sẵn sàng."
+            except Exception as e:
+                logger.error("[Coordinator] Lỗi tổng hợp bộ nhớ: %s", e)
+                answer = f"Lỗi tổng hợp bộ nhớ: {str(e)[:100]}"
 
         else:
             answer = orchestrator.run(user_input=user_input)
@@ -211,6 +226,12 @@ def _cleanup_components(components: dict):
         except Exception:
             pass
 
+    if components.get("consolidator"):
+        try:
+            components["consolidator"].stop_scheduler()
+        except Exception:
+            pass
+
     gc.collect()
     logger.info("[Main] Da don sach tai nguyen.")
 
@@ -259,8 +280,23 @@ def main():
         components["router"]       = router
         components["memory"]       = memory
         components["orchestrator"] = orchestrator
+        
+        # Khoi tao MemoryConsolidator
+        from src.services.memory_consolidator import MemoryConsolidator
+        gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+        consolidator = MemoryConsolidator(
+            memory=memory, 
+            vault_path=VAULT_PATH, 
+            gemini_api_key=gemini_api_key
+        )
+        components["consolidator"] = consolidator
+        
+        # Check catchup va khoi dong scheduler (0:00 midnight)
+        consolidator.check_and_catchup()
+        consolidator.start_scheduler()
+        
     except Exception as e:
-        logger.error(f"[Main] Loi khoi tao Core AI: {e}")
+        logger.error(f"[Main] Loi khoi tao Core AI / Consolidator: {e}")
 
     # Dang ky SIGTERM handler
     signal.signal(signal.SIGTERM, create_shutdown_handler(components))
@@ -287,6 +323,7 @@ def main():
                 router=router,
                 memory=memory,
                 orchestrator=orchestrator,
+                consolidator=components.get("consolidator"),
             )
             logger.info("[Main] Core AI san sang phuc vu cau hoi.")
         else:
@@ -312,6 +349,7 @@ def main():
         # LUU Y: Can quyen Administrator tren Windows de hook toan cuc
         hotkey_thread = GlobalHotkeyThread(parent=app)
         hotkey_thread.toggle_signal.connect(window.toggle_visibility)
+        hotkey_thread.voice_signal.connect(window.toggle_voice_recording)
         hotkey_thread.start()
         components["hotkey_thread"] = hotkey_thread
 
@@ -321,6 +359,7 @@ def main():
         logger.info(f"  Inbox: {os.path.join(VAULT_PATH, '01_Inbox')}")
         logger.info("  Core AI: " + ("SAN SANG" if process_fn else "CHUA CO API KEY"))
         logger.info("  Phim tat: Ctrl+Space de bat/tat Spotlight.")
+        logger.info("  Phim tat: Ctrl+Shift+Space de bat/tat thu am (Voice Mode).")
         logger.info("  Click phai System Tray -> Thoat de dung han.")
         logger.info("=" * 60)
 
