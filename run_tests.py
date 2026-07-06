@@ -281,11 +281,12 @@ try:
     import inspect
     import src.ui.spotlight as sp
 
-    # BUG-4: subprocess.Popen used instead of os.startfile for TTS
-    tts_source = inspect.getsource(sp.TTSWorker.run)
-    check("BUG-4: subprocess.Popen in TTSWorker", "subprocess.Popen" in tts_source)
-    check("BUG-4: proc.wait() present (blocking)", "proc.wait()" in tts_source)
-    check("BUG-4: FileNotFoundError fallback exists", "FileNotFoundError" in tts_source)
+    # BUG-4: QMediaPlayer used for TTS instead of subprocess (Phase 5 Refactor)
+    tts_setup_source = inspect.getsource(sp.SpotlightWindow._setup_tts_player)
+    check("BUG-4: QMediaPlayer used in _setup_tts_player", "QMediaPlayer" in tts_setup_source)
+    
+    tts_cleanup_source = inspect.getsource(sp.SpotlightWindow._cleanup_tts_file)
+    check("BUG-4: setSource(QUrl()) exists to release file lock", "setSource(QUrl())" in tts_cleanup_source)
 
     # BUG-11: stop_listening method exists
     check("BUG-11: GlobalHotkeyThread.stop_listening exists", hasattr(sp.GlobalHotkeyThread, "stop_listening"))
