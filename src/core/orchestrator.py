@@ -365,6 +365,7 @@ class ReActOrchestrator:
         self._rag = hybrid_rag
         self._worker = WorkerEngine(model=worker_model)
         self._critique = SelfCritiqueAgent()
+        self._last_sources: list = []   # Giai doan 5: theo doi nguon de DocxExporter
 
     def set_rag(self, hybrid_rag):
         """Inject HybridRAG sau khi khởi tạo (tránh circular dependency)."""
@@ -374,20 +375,31 @@ class ReActOrchestrator:
     def _node_retrieve(self, state: AgentState) -> AgentState:
         """
         Bước 5.1 -> 5.3: Truy xuất ngữ cảnh lai kép (Vector + Graph).
+
+        [C1-FIX] Đã sửa: dead code (try/except sau return) đã được xóa và
+        bọc đúng vị trí quanh lệnh gọi retrieve_context() thực sự.
+        [M1-FIX] Đã xóa _wide_retrieval dead key — top_k cố định = 5.
         """
         if self._rag is None:
             logger.warning("[ReAct:RETRIEVE] HybridRAG chưa được inject. Context rỗng.")
             return {**state, "context_chunks": []}
 
         try:
-            chunks = self._rag.retrieve_context(
+            context_chunks = self._rag.retrieve_context(
                 query=state["user_input"],
                 top_k=5,
             )
-            logger.info(f"[ReAct:RETRIEVE] Tìm được {len(chunks)} chunks ngữ cảnh.")
-            return {**state, "context_chunks": chunks}
+            # Lưu nguồn để get_last_sources() trả về cho DocxExporter (Giai đoạn 5)
+            self._last_sources = list({
+                c.get("source", "") for c in context_chunks if c.get("source")
+            })
+            logger.info(
+                "[ReAct:RETRIEVE] Thu được %d chunks từ %d nguồn.",
+                len(context_chunks), len(self._last_sources)
+            )
+            return {**state, "context_chunks": context_chunks}
         except Exception as e:
-            logger.error(f"[ReAct:RETRIEVE] Lỗi truy xuất RAG: {e}")
+            logger.error("[ReAct:RETRIEVE] Lỗi truy xuất RAG: %s", e)
             return {**state, "context_chunks": [], "error": str(e)}
 
     # ── Node 2: Chấm điểm ngữ cảnh (Self-Critique) ───────────────────────────
@@ -553,7 +565,9 @@ Trả lời bằng tiếng Việt học thuật:"""
             "error": None,
         }
 
-        logger.info(f"[ReActOrchestrator] === Bắt đầu xử lý: '{user_input[:60]}...' ===")
+        # [S5-FIX] Chỉ thêm "..." khi input thực sự bị cắt
+        preview = user_input[:60] + ("..." if len(user_input) > 60 else "")
+        logger.info("[ReActOrchestrator] === Bắt đầu xử lý: '%s' ===", preview)
 
         # ── Bước 1: Truy xuất ngữ cảnh ──────────────────────────────────────
         state = self._node_retrieve(state)
@@ -562,17 +576,23 @@ Trả lời bằng tiếng Việt học thuật:"""
         state = self._node_critique(state)
 
         while self._should_search(state):
-            # Web search để bổ sung ngữ cảnh còn thiếu
+            # Track so ket qua web truoc khi search de chi lay ket qua MOI
+            prev_web_count = len(state.get("web_results", []))
+
+            # Web search de bo sung ngu canh con thieu
             state = self._node_web_search(state)
 
-            # Sau web search, cập nhật context_chunks với kết quả web dạng chunk
-            web_chunks = [
+            # [BUG-9 FIX] Chi convert KET QUA WEB MOI (tu vong nay) thanh chunks,
+            # khong convert lai tat ca web_results cu -> tranh duplicate trong context_chunks.
+            all_web = state.get("web_results", [])
+            new_web_texts = all_web[prev_web_count:]   # Chi lay phan moi them vao
+            new_web_chunks = [
                 {"text": w, "source": "web_search", "page": 0, "score": 0.7}
-                for w in state.get("web_results", [])
+                for w in new_web_texts
             ]
-            state = {**state, "context_chunks": state["context_chunks"] + web_chunks}
+            state = {**state, "context_chunks": state["context_chunks"] + new_web_chunks}
 
-            # Critique lại với context mới
+            # Critique lai voi context moi
             state = self._node_critique(state)
 
         # ── Bước 3: Sinh câu trả lời ─────────────────────────────────────────
@@ -584,6 +604,13 @@ Trả lời bằng tiếng Việt học thuật:"""
             f"Answer length={len(state['final_answer'])} chars ==="
         )
         return state["final_answer"]
+
+    def get_last_sources(self) -> list:
+        """
+        [Giai doan 5] Tra ve danh sach nguon (ten file) tu lan RAG gan nhat.
+        Duoc dung boi DocxExporter de xay dung phan Tai Lieu Tham Khao.
+        """
+        return list(self._last_sources)
 
     def close(self):
         """Dọn dẹp tài nguyên."""

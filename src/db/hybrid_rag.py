@@ -35,12 +35,8 @@ from qdrant_client.models import (
 )
 from neo4j import GraphDatabase, Driver, exceptions as neo4j_exceptions
 
-# ─── Cấu hình Logging ──────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+# ─── Logging ─────────────────────────────────────────────────────────────────
+# [S2-FIX] Không gọi basicConfig ở đây — main.py đã cấu hình toàn cục.
 logger = logging.getLogger("HybridRAG")
 
 # ─── Tải biến môi trường ───────────────────────────────────────────────────────
@@ -236,16 +232,25 @@ class Neo4jManager:
     def _get_driver(self) -> Driver:
         """Lazy-init driver để tránh kết nối khi không cần."""
         if self._driver is None:
-            if not NEO4J_URI or not NEO4J_PASSWORD:
+            # [C3-FIX] Kiểm tra cả template placeholder "diền" giống API keys,
+            # tránh người dùng để nguyên template rồi hệ thống kết nối thất bại khó debug.
+            neo4j_pw = NEO4J_PASSWORD
+            is_placeholder = (
+                not NEO4J_URI
+                or not neo4j_pw
+                or "diền" in NEO4J_URI.lower()
+                or "diền" in neo4j_pw.lower()
+            )
+            if is_placeholder:
                 raise ValueError(
-                    "[Neo4j] Thiếu thông tin kết nối. "
+                    "[Neo4j] Thiếu thông tin kết nối hoặc còn dùng template placeholder. "
                     "Hãy điền NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD vào file .env"
                 )
             self._driver = GraphDatabase.driver(
                 NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)
             )
             self._driver.verify_connectivity()
-            logger.info(f"[Neo4j] Đã kết nối thành công đến: {NEO4J_URI}")
+            logger.info("[Neo4j] Đã kết nối thành công đến: %s", NEO4J_URI)
         return self._driver
 
     def upsert_node(
@@ -423,14 +428,27 @@ class HybridRAG:
         chunk_ids = self.qdrant.upsert_chunks(chunks)
 
         # Bước 2: Bơm chunk_id vào từng Node tương ứng trên Neo4j (Đồng bộ chéo)
+        # [BUG-6 FIX] Trước đây gắn TOÀN BỘ chunk_ids vào mọi entity → graph search trả rác.
+        # Chiến lược đúng: mỗi entity nhận chunk_ids của các chunk chứa tên entity đó.
+        # Nếu không map được → gắn toàn bộ (graceful fallback) để không mất dữ liệu.
         logger.info(f"[HybridRAG] Đồng bộ {len(entities)} entities lên Neo4j Cloud...")
         node_results = []
         for entity in entities:
+            entity_name_lower = entity["name"].lower()
+            # Lọc những chunk chứa tên entity (case-insensitive)
+            relevant_ids = [
+                chunk_ids[i]
+                for i, c in enumerate(chunks)
+                if entity_name_lower in c.get("text", "").lower()
+            ]
+            # Fallback: nếu không tìm thấy chunk nào → dùng toàn bộ (tài liệu nhỏ)
+            assigned_ids = relevant_ids if relevant_ids else chunk_ids
+
             node_id = self.neo4j.upsert_node(
                 node_type=entity.get("type", "Concept"),
                 name=entity["name"],
                 properties={"description": entity.get("description", "")},
-                qdrant_chunk_ids=chunk_ids,  # Gắn toàn bộ chunk_id của tài liệu vào node
+                qdrant_chunk_ids=assigned_ids,
             )
             node_results.append(node_id)
 
@@ -481,14 +499,20 @@ class HybridRAG:
         vector_results = self.qdrant.search(query, top_k=top_k)
 
         # Đường 2: Graph search qua Neo4j -> lấy chunk_id -> Qdrant
-        graph_chunk_ids = self.neo4j.query_entity_chunk_ids(keyword=query)
+        # [BUG-2 FIX] Bọc neo4j call trong try/except: nếu NEO4J_URI trống hoặc mất mạng
+        # → chỉ dùng vector search (graceful degradation), không crash toàn bộ retrieve_context().
         graph_results = []
-        if graph_chunk_ids:
-            graph_results = self.qdrant.get_chunks_by_ids(graph_chunk_ids[:top_k])
-            # Gán điểm ưu tiên cho kết quả từ đồ thị (entity-aware retrieval)
-            for r in graph_results:
-                r["score"] = r.get("score", 0.85)
-                r["source_method"] = "graph"
+        try:
+            graph_chunk_ids = self.neo4j.query_entity_chunk_ids(keyword=query)
+            if graph_chunk_ids:
+                graph_results = self.qdrant.get_chunks_by_ids(graph_chunk_ids[:top_k])
+                # Gán điểm ưu tiên cho kết quả từ đồ thị (entity-aware retrieval)
+                for r in graph_results:
+                    r["score"] = r.get("score", 0.85)
+                    r["source_method"] = "graph"
+        except (ValueError, Exception) as e:
+            # ValueError: NEO4J_URI trống. Exception: mất kết nối mạng/timeout.
+            logger.warning("[HybridRAG] Neo4j không khả dụng, chỉ dùng vector search: %s", e)
 
         for r in vector_results:
             r["source_method"] = "vector"

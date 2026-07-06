@@ -28,12 +28,9 @@ from typing import Optional
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileCreatedEvent
 
-# ─── Cấu hình Logging ──────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+# ─── Logging ─────────────────────────────────────────────────────────────────
+# [S3-FIX] Không gọi basicConfig ở đây — main.py đã cấu hình toàn cục với
+# FileHandler + StreamHandler. Gọi lại chỉ tạo duplicate handler.
 logger = logging.getLogger("WatchdogListener")
 
 # ─── Định dạng file được chấp nhận ────────────────────────────────────────────
@@ -126,11 +123,15 @@ class InboxWatcher:
         os.makedirs(inbox_path, exist_ok=True)
         os.makedirs(knowledge_path, exist_ok=True)
 
+        # [C2-FIX] Queue KHÔNG tạo ở đây (main thread) mà sẽ được tạo bên trong
+        # _run_async_loop() SAU KHI asyncio.set_event_loop() được gọi.
+        # Tạo Queue ở main thread trước khi loop chạy là race condition.
         self._queue: Optional[asyncio.Queue] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._observer: Optional[Observer] = None
         self._worker_thread: Optional[threading.Thread] = None
         self._running = False
+        self._loop_ready = threading.Event()   # [C2-FIX] Signal khi loop đã sẵn sàng
 
     def set_hybrid_rag(self, hybrid_rag):
         """Inject HybridRAG instance sau khi khởi tạo (dependency injection)."""
@@ -140,30 +141,36 @@ class InboxWatcher:
         """
         Khởi động toàn bộ hệ thống giám sát ngầm:
         1. Tạo asyncio event loop mới trên Worker Thread.
-        2. Khởi động watchdog Observer.
-        3. Worker Thread bắt đầu lắng nghe Queue.
+        2. Worker Thread khởi tạo Queue RỒI mới signal sẵn sàng.
+        3. Khởi động watchdog Observer SAU KHI loop đã chạy.
+
+        [C2-FIX] Observer chỉ start sau khi _loop_ready.wait() trả về True,
+        đảm bảo không có sự kiện file nào đến trước khi Queue được tạo.
         """
         self._running = True
-
-        # Tạo event loop mới chạy trên Worker Thread riêng biệt
         self._loop = asyncio.new_event_loop()
-        self._queue = asyncio.Queue()
+        self._loop_ready.clear()
 
-        # Khởi động Worker Thread xử lý asyncio
+        # Khởi động Worker Thread — Queue sẽ được tạo bên trong thread này
         self._worker_thread = threading.Thread(
             target=self._run_async_loop,
             name="InboxWorker",
-            daemon=True,  # Thread tự dừng khi main process thoát
+            daemon=True,
         )
         self._worker_thread.start()
 
-        # Khởi động watchdog Observer
+        # [C2-FIX] Chờ worker thread báo hiệu Queue đã sẵn sàng (tối đa 5 giây)
+        if not self._loop_ready.wait(timeout=5.0):
+            logger.error("[Watchdog] Worker loop không khởi động được trong 5s!")
+            return
+
+        # Chỉ bắt đầu lắng nghe file SAU KHI Queue đã tồn tại
         event_handler = InboxEventHandler(queue=self._queue, loop=self._loop)
         self._observer = Observer()
         self._observer.schedule(event_handler, path=self.inbox_path, recursive=False)
         self._observer.start()
 
-        logger.info(f"[Watchdog] 👁️  Đang giám sát thư mục: {self.inbox_path}")
+        logger.info("[Watchdog] 👁️  Đang giám sát thư mục: %s", self.inbox_path)
         logger.info("[Watchdog] Hệ thống sẵn sàng nhận tài liệu mới.")
 
     def stop(self):
@@ -178,8 +185,16 @@ class InboxWatcher:
         logger.info("[Watchdog] Đã dừng hệ thống giám sát.")
 
     def _run_async_loop(self):
-        """Chạy asyncio event loop trên Worker Thread."""
+        """
+        Chạy asyncio event loop trên Worker Thread.
+        [C2-FIX] Tạo Queue TẠI ĐÂY sau khi set_event_loop() — đảm bảo
+        Queue được gắn đúng vào event loop đang chạy trong thread này.
+        """
         asyncio.set_event_loop(self._loop)
+        # Tạo Queue trong ngữ cảnh event loop đã được set
+        self._queue = asyncio.Queue()
+        # Báo hiệu cho start() biết Queue đã sẵn sàng
+        self._loop_ready.set()
         self._loop.run_until_complete(self._process_queue())
 
     async def _process_queue(self):
@@ -196,6 +211,11 @@ class InboxWatcher:
                 self._queue.task_done()
             except asyncio.TimeoutError:
                 continue  # Timeout binh thuong, tiep tuc vong lap
+            except asyncio.CancelledError:
+                # [BUG-10 FIX] CancelledError phai duoc re-raise de asyncio co the
+                # dung sach event loop khi loop.stop() duoc goi tu stop().
+                logger.info("[Watchdog] Queue worker da bi huy, dung sach.")
+                break
             except Exception as e:
                 logger.error("[Watchdog] Loi trong process_queue: %s", e)
 
@@ -233,7 +253,9 @@ class InboxWatcher:
             from src.utils.parser import parse_document, PDFParser, PPTXParser
 
             # Bóc tách tài liệu thành chunks (chạy trong executor để không block event loop)
-            loop = asyncio.get_event_loop()
+            # [BUG-3 FIX] Dùng get_running_loop() thay vì get_event_loop() (deprecated Python 3.10+,
+            # raise RuntimeError trong 3.12+ nếu không có loop đang chạy trong context hiện tại).
+            loop = asyncio.get_running_loop()
             chunks = await loop.run_in_executor(None, parse_document, file_path)
 
             if not chunks:
@@ -243,6 +265,8 @@ class InboxWatcher:
             logger.info("[Watchdog] Boc tach duoc %d chunks tu %s", len(chunks), path.name)
 
             # Bước 2: Lưu Markdown sang 02_Knowledge/
+            # [BUG-3 FIX] Tiếp tục dùng get_running_loop() cho nhất quán
+            loop = asyncio.get_running_loop()
             md_output_path = await loop.run_in_executor(
                 None,
                 self._save_markdown,
