@@ -227,6 +227,40 @@ class VoiceWorker(QThread):
 
 
 # ==============================================================================
+#  GreetingWorker - Phat loi chao truoc khi ghi am (The "Jarvis" Approach)
+# ==============================================================================
+
+class GreetingWorker(QThread):
+    """
+    Phat file loi chao cuc bo (assets/greeting.mp3) de bao hieu he thong dang hoat dong.
+    Chay dong bo (blocking) trong Worker Thread de dam bao:
+    1. UI khong bi do.
+    2. Loa phat xong hoan toan moi bat dau ghi am (khu tieng vong - Echo).
+    """
+    finished = pyqtSignal()
+
+    def run(self):
+        try:
+            import subprocess
+            greeting_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "greeting.mp3")
+            if os.path.exists(greeting_path):
+                logger.info("[GreetingWorker] Dang phat loi chao...")
+                proc = subprocess.Popen(
+                    ["wmplayer", greeting_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                proc.wait()  # Khoa luong: Cho phat xong moi thoat
+                logger.info("[GreetingWorker] Loi chao da phat xong.")
+            else:
+                logger.warning("[GreetingWorker] Khong tim thay file %s", greeting_path)
+        except Exception as e:
+            logger.error("[GreetingWorker] Loi phat loi chao: %s", e)
+        finally:
+            self.finished.emit()
+
+
+# ==============================================================================
 #  GlobalHotkeyThread - Lang nghe phim tat toan cuc
 # ==============================================================================
 
@@ -314,6 +348,7 @@ class SpotlightWindow(QWidget):
         self._ai_worker:  Optional[AIWorker]  = None
         self._tts_worker: Optional[TTSWorker] = None
         self._voice_worker: Optional[VoiceWorker] = None
+        self._greeting_worker: Optional[GreetingWorker] = None
         
         # State & Engine cho Voice Mode
         self._is_recording = False
@@ -692,12 +727,30 @@ class SpotlightWindow(QWidget):
                 self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
                 self._show_result("Lỗi: Không nhận được dữ liệu âm thanh.")
         else:
-            # Bat dau ghi am
+            # Bat dau luong phat loi chao (Jarvis Approach)
             self.show_and_focus()
             self._is_recording = True
             self.input_box.setEnabled(False)
-            self.input_box.setPlaceholderText("  Đang nghe... (Bấm Ctrl+Shift+Space lần nữa để gửi)")
-            self._voice_recorder.start_recording()
+            self.input_box.setPlaceholderText("  Đang gọi trợ lý... (Vui lòng chờ tiếng Bíp)")
+            
+            # Dung worker truoc neu dang chay
+            if self._greeting_worker and self._greeting_worker.isRunning():
+                self._greeting_worker.terminate()
+                self._greeting_worker.wait()
+                
+            self._greeting_worker = GreetingWorker(parent=self)
+            self._greeting_worker.finished.connect(self._on_greeting_finished)
+            self._greeting_worker.finished.connect(self._greeting_worker.deleteLater)
+            self._greeting_worker.start()
+
+    def _on_greeting_finished(self):
+        """Duoc goi khi loi chao da phat xong (hoac khong the phat). Bat dau thu am."""
+        if not self._is_recording:
+            return  # Nguoi dung da huy giua chung
+            
+        self.input_box.setPlaceholderText("  Xin chào! Tôi đang nghe... (Bấm Ctrl+Shift+Space lần nữa để gửi)")
+        self._voice_recorder.start_recording()
+        self._greeting_worker = None
 
     def _on_voice_finished(self, text: str):
         """Nhan ket qua tu WhisperSTT va tu dong gui lenh."""
@@ -747,7 +800,7 @@ class SpotlightWindow(QWidget):
         [OPT-2] Don dep tat ca Worker Thread khi app thoat.
         Goi tu main.py truoc app.quit() hoac trong finalizer.
         """
-        for worker in (self._ai_worker, self._tts_worker, self._voice_worker):
+        for worker in (self._ai_worker, self._tts_worker, self._voice_worker, self._greeting_worker):
             if worker and worker.isRunning():
                 worker.terminate()
                 worker.wait(500)
@@ -805,9 +858,12 @@ def setup_system_tray(app: QApplication, window: SpotlightWindow) -> QSystemTray
     tray.setContextMenu(menu)
 
     # Double-click vao tray icon -> toggle
-    def _on_activated(reason):
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            window.toggle_visibility()
+    def _on_activated(reason: QSystemTrayIcon.ActivationReason):
+        try:
+            if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+                window.toggle_visibility()
+        except:
+            pass
 
     tray.activated.connect(_on_activated)
 
