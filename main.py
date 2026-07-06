@@ -54,7 +54,8 @@ VAULT_PATH = os.getenv(
 def init_database():
     """
     Khoi tao ket noi HybridRAG (Qdrant + Neo4j).
-    Tra ve instance HybridRAG hoac None neu config chua san sang.
+    Tra ve instance HybridRAG hoac None neu co loi nghiem trong.
+    [BUG-12 FIX] Don gian hoa: tra ve HybridRAG truc tiep thay vi tuple (None, HybridRAG).
     """
     from src.db.hybrid_rag import HybridRAG
 
@@ -66,15 +67,17 @@ def init_database():
             "       -> Qdrant van hoat dong, nhung Neo4j se bi skip.\n"
             "       -> Dien thong tin Neo4j Aura vao .env de kich hoat do thi tri thuc."
         )
-        return None, HybridRAG()
+        # [BUG-2 FIX] HybridRAG van duoc tra ve: retrieve_context() se tu xu ly
+        # loi Neo4j bang try/except graceful degradation ben trong.
+        return HybridRAG()
 
     try:
         rag = HybridRAG()
         logger.info("[Main] HybridRAG (Qdrant + Neo4j) da san sang.")
-        return None, rag
+        return rag
     except Exception as e:
         logger.error(f"[Main] Loi khoi tao HybridRAG: {e}")
-        return None, None
+        return None
 
 
 def init_watcher(hybrid_rag):
@@ -135,13 +138,23 @@ def process_user_input(
         elif intent.intent_type == "os_control":
             payload = intent.os_action_payload
             app_name = payload.app_name if payload else "unknown"
-            answer = f"Lenh mo '{app_name}' da duoc ghi nhan."
+            answer = f"Lệnh mở '{app_name}' đã được ghi nhận."
 
         elif intent.intent_type == "export_docx":
-            answer = f"Xuat bao cao ve '{intent.topic}' se kha dung o Giai doan 5."
+            # [C4-FIX] Guard None: topic có thể là None nếu router không nhận diện được
+            topic = intent.topic or "không xác định"
+            try:
+                from src.services.docx_exporter import DocxExporter
+                exporter = DocxExporter(orchestrator=orchestrator)
+                _path, answer = exporter.export(topic=topic)
+            except ImportError:
+                answer = f"Xuất báo cáo về '{topic}': thiếu thư viện python-docx. Chạy: pip install python-docx"
+            except Exception as e:
+                logger.error("[Coordinator] Lỗi DocxExporter: %s", e)
+                answer = f"Lỗi xuất báo cáo: {str(e)[:100]}"
 
         elif intent.intent_type == "daily_task":
-            answer = "Tac vu hang ngay se kha dung o Giai doan 5."
+            answer = "Tác vụ hàng ngày sẽ khả dụng ở Giai đoạn 5."
 
         else:
             answer = orchestrator.run(user_input=user_input)
@@ -165,6 +178,14 @@ def process_user_input(
 
 def _cleanup_components(components: dict):
     """Don dep tai nguyen tap trung. Goi tu ca SIGTERM va finally block."""
+    # [BUG-11 FIX] Dung hotkey hook truoc tien de giai phong keyboard.wait() blocking
+    if components.get("hotkey_thread"):
+        try:
+            components["hotkey_thread"].stop_listening()
+            components["hotkey_thread"].wait(500)
+        except Exception:
+            pass
+
     # Don Worker Threads cua UI truoc
     if components.get("window"):
         try:
@@ -219,7 +240,7 @@ def main():
 
     # -- Buoc 1: Khoi tao Database --
     logger.info("[Main] [1/4] Dang ket noi Database...")
-    _, rag = init_database()
+    rag = init_database()   # [BUG-12 FIX] Tra ve HybridRAG truc tiep, khong con tuple
     components["rag"] = rag
 
     # -- Buoc 2: Khoi dong InboxWatcher --

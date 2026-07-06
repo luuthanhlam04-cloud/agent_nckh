@@ -144,6 +144,7 @@ class TTSWorker(QThread):
         tmp_path = None
         try:
             import edge_tts
+            import subprocess
 
             async def _download_audio():
                 """Tai MP3 tu Azure va tra ve duong dan file tam."""
@@ -157,17 +158,27 @@ class TTSWorker(QThread):
             tmp_path = asyncio.run(_download_audio())
             logger.info("[TTSWorker] Da tai MP3: %s", tmp_path)
 
-            # Phat bang Windows Media Player (non-blocking, chay trong nen)
-            # Dung start de khong block va xoa file sau delay an toan
-            os.startfile(tmp_path)
+            # [BUG-4 FIX] Dung subprocess.Popen + wait() thay vi os.startfile() (async).
+            # os.startfile() tra ve ngay lap tuc -> os.remove() chay truoc khi phat xong.
+            # subprocess.Popen + proc.wait() dam bao chi xoa file SAU KHI phat xong.
+            proc = subprocess.Popen(
+                ["wmplayer", tmp_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            proc.wait()   # Blocking: cho den khi wmplayer dong
             logger.info("[TTSWorker] Da phat TTS: %d ky tu.", len(self._text))
-
-            # Uoc tinh thoi gian phat: ~150 ky tu/giay, them 3 giay dem
-            estimated_sec = max(5, len(self._text) // 150 + 3)
-            self.msleep(estimated_sec * 1000)   # QThread.msleep, khong block event loop
 
         except ImportError:
             logger.warning("[TTSWorker] edge-tts chua cai. Bo qua TTS.")
+        except FileNotFoundError:
+            # wmplayer khong co tren may nay (Windows N edition / Server)
+            logger.warning("[TTSWorker] wmplayer khong tim thay. Thu os.startfile() fallback.")
+            if tmp_path and os.path.exists(tmp_path):
+                os.startfile(tmp_path)
+                # Uoc tinh thoi gian phat de tranh xoa file qua som
+                estimated_sec = max(5, len(self._text) // 150 + 3)
+                self.msleep(estimated_sec * 1000)
         except Exception as e:
             logger.error("[TTSWorker] Loi TTS: %s", e)
         finally:
@@ -192,8 +203,25 @@ class GlobalHotkeyThread(QThread):
 
     Yeu cau: Chay Python voi quyen Administrator tren Windows.
     Neu khong co quyen -> log warning, khong crash.
+
+    [BUG-11 FIX] Them flag _running va phuong thuc stop() de dung sach.
+    keyboard.unhook_all() giai phong hook truoc khi thread ket thuc.
     """
     toggle_signal = pyqtSignal()   # Phat ve Main Thread khi hotkey duoc bam
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._running = True
+
+    def stop_listening(self):
+        """Dung sach hotkey hook. Goi tu Main Thread truoc khi app thoat."""
+        self._running = False
+        try:
+            import keyboard
+            keyboard.unhook_all()   # Giai phong tat ca hook -> keyboard.wait() se return
+            logger.info("[Hotkey] Da giai phong keyboard hooks.")
+        except Exception:
+            pass
 
     def run(self):
         try:
@@ -205,7 +233,7 @@ class GlobalHotkeyThread(QThread):
 
             keyboard.add_hotkey(GLOBAL_HOTKEY, _on_hotkey)
             logger.info("[Hotkey] Dang lang nghe %s (can quyen Admin).", GLOBAL_HOTKEY)
-            keyboard.wait()   # Blocking: giu thread song mai
+            keyboard.wait()   # Blocking: giu thread song - se return khi unhook_all() duoc goi
 
         except ImportError:
             logger.warning("[Hotkey] Thu vien 'keyboard' chua cai. Hotkey bi tat.")

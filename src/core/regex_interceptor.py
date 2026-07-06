@@ -23,6 +23,7 @@ Các module con (7 hàm theo README.md):
 
 import os
 import re
+import subprocess
 import logging
 from datetime import datetime
 from typing import Optional, Tuple, Any
@@ -147,7 +148,10 @@ def check_os_commands(user_input: str) -> Optional[str]:
             break
 
     if command:
-        os.system(command)
+        # [M2-FIX] Dùng subprocess.Popen (non-blocking) thay vì os.system() (blocking).
+        # os.system() giữ Main Thread đợi đến khi lệnh shell kết thúc — có thể đơ UI Qt.
+        # subprocess.Popen trả về ngay lập tức, ứng dụng mở nghiềng trong nền.
+        subprocess.Popen(command, shell=True)
         logger.info("[Interceptor] OS Command: %s → %s", app_keyword, command)
         return f"Đã mở {match.group(2).strip()} cho sếp."
 
@@ -354,9 +358,12 @@ def intercept(
     if not text:
         return None, None
 
-    # ── Lớp 1: Whisper hallucination ──────────────────────────────────────────
+    # ── Lớp 1: Whisper hallucination ───────────────────────────────────────────
     if filter_whisper_hallucination(text) is None:
-        return "", "ninja"  # Ẩn cửa sổ, không hiển thị gì
+        # [BUG-7 FIX] Trả (None, None) thay vì ("", "ninja") → nhất quán với mọi caller:
+        # Spotlight kiểm tra `result is not None` → None sẽ bỏ qua đúng cách.
+        # Không gọi hide() để tránh ẩn cửa sổ mà không có lý do thấy được.
+        return None, None
 
     # ── Lớp 2: Truy vấn thời gian/ngày tháng ─────────────────────────────────
     result = check_time_queries(text)
