@@ -129,27 +129,22 @@ class TTSWorker(QThread):
     Phat giong noi trong Worker Thread rieng.
 
     Chien luoc phat am:
-      1. edge-tts (Azure Cloud): Lu file MP3 tam -> phat bang winsound (blocking).
-         winsound.PlaySound() biet chinh xac khi nao phat xong -> xoa file ngay.
-         [OPT-1] Loai bo sleep(10) magic number cua phien ban truoc.
-      2. Fallback: winsound khong ho tro MP3 truc tiep tren mot so may.
-         Trong truong hop nay, ghi wav hoac skip.
-
-    asyncio.run() duoc goi ben trong QThread.run() de tranh
-    Event Loop Conflict voi PyQt6 Main Thread.
+    Worker thuc hien gui lenh Text-to-Speech xuong edge-tts.
+    [REFACTOR Giai doan 5] Chi thuc hien tai file MP3 ve may roi bao lai cho Main Thread.
+    Khong dung vao UI hay phat truc tiep bang wmplayer.
     """
-    finished = pyqtSignal()
+    finished = pyqtSignal(str)   # Phat duong dan file tam ve Main Thread
 
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
         self._text = text
 
     def run(self):
-        """asyncio.run() chay trong Worker Thread, tach biet khoi PyQt6 Main Loop."""
-        tmp_path = None
+        tmp_path = ""
         try:
             import edge_tts
-            import subprocess
+            import asyncio
+            import tempfile
 
             async def _download_audio():
                 """Tai MP3 tu Azure va tra ve duong dan file tam."""
@@ -161,40 +156,15 @@ class TTSWorker(QThread):
 
             # Tai file am thanh (async, trong Worker Thread)
             tmp_path = asyncio.run(_download_audio())
-            logger.info("[TTSWorker] Da tai MP3: %s", tmp_path)
-
-            # [BUG-4 FIX] Dung subprocess.Popen + wait() thay vi os.startfile() (async).
-            # os.startfile() tra ve ngay lap tuc -> os.remove() chay truoc khi phat xong.
-            # subprocess.Popen + proc.wait() dam bao chi xoa file SAU KHI phat xong.
-            proc = subprocess.Popen(
-                ["wmplayer", tmp_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            proc.wait()   # Blocking: cho den khi wmplayer dong
-            logger.info("[TTSWorker] Da phat TTS: %d ky tu.", len(self._text))
+            logger.info("[TTSWorker] Da tai MP3 thanh cong: %s", tmp_path)
+            self.finished.emit(tmp_path)
 
         except ImportError:
             logger.warning("[TTSWorker] edge-tts chua cai. Bo qua TTS.")
-        except FileNotFoundError:
-            # wmplayer khong co tren may nay (Windows N edition / Server)
-            logger.warning("[TTSWorker] wmplayer khong tim thay. Thu os.startfile() fallback.")
-            if tmp_path and os.path.exists(tmp_path):
-                os.startfile(tmp_path)
-                # Uoc tinh thoi gian phat de tranh xoa file qua som
-                estimated_sec = max(5, len(self._text) // 150 + 3)
-                self.msleep(estimated_sec * 1000)
+            self.finished.emit("")
         except Exception as e:
-            logger.error("[TTSWorker] Loi TTS: %s", e)
-        finally:
-            # Don file tam sau khi phat (hoac loi)
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                    logger.debug("[TTSWorker] Da xoa file tam: %s", tmp_path)
-                except Exception:
-                    pass
-            self.finished.emit()
+            logger.error("[TTSWorker] Loi tai TTS: %s", e)
+            self.finished.emit("")
 
 
 # ==============================================================================
@@ -329,6 +299,7 @@ class SpotlightWindow(QWidget):
         self._setup_ui()
         self._setup_animation()
         self._setup_greeting_player()
+        self._setup_tts_player()
 
     # ── Khoi tao ─────────────────────────────────────────────────────────────
 
@@ -362,12 +333,30 @@ class SpotlightWindow(QWidget):
         layout.setSpacing(8)
 
         # ── O nhap lenh ───────────────────────────────────────────────────────
+        self.input_box = QLineEdit(self)
+        self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
+        self.input_box.setFont(QFont("Segoe UI", 14))
+        self.input_box.setMinimumHeight(44)
+        self.input_box.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: rgba(30, 30, 50, 200);
+                color: rgb({COLOR_TEXT.red()}, {COLOR_TEXT.green()}, {COLOR_TEXT.blue()});
+                border: 1px solid rgba(100, 100, 160, 140);
+                border-radius: 10px;
+                padding: 6px 14px;
+                selection-background-color: rgba(100, 160, 255, 120);
+            }}
+            QLineEdit:focus {{
+                border: 1.5px solid rgba({COLOR_ACCENT.red()}, {COLOR_ACCENT.green()}, {COLOR_ACCENT.blue()}, 200);
             }}
             QLineEdit:disabled {{
                 color: rgba(150, 150, 180, 150);
             }}
         """)
+        
+        # Dang ky su kien de submit va interuption
         self.input_box.returnPressed.connect(self._on_submit)
+        self.input_box.textChanged.connect(self._on_input_text_changed)
         layout.addWidget(self.input_box)
 
         # ── Label trang thai "Dang suy nghi..." ───────────────────────────────
@@ -605,23 +594,69 @@ class SpotlightWindow(QWidget):
         except Exception as e:
             logger.error("[SpotlightWindow] Toast loi: %s", e)
 
+    def _setup_tts_player(self):
+        """Khoi tao QMediaPlayer de phat Audio TTS AI tra loi."""
+        try:
+            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+            self._tts_player = QMediaPlayer(self)
+            self._tts_audio = QAudioOutput(self)
+            self._tts_player.setAudioOutput(self._tts_audio)
+            self._tts_player.mediaStatusChanged.connect(self._on_tts_status_changed)
+            self._current_tts_file = ""
+            logger.info("[SpotlightWindow] Da setup QMediaPlayer cho TTS.")
+        except Exception as e:
+            logger.warning("[SpotlightWindow] Khong the nap QMediaPlayer TTS: %s", e)
+            self._tts_player = None
+
+    def _cleanup_tts_file(self):
+        """[WinError 32 Fix] Nha QUrl ra khoi QMediaPlayer truoc roi moi xoa file."""
+        if hasattr(self, '_tts_player') and self._tts_player:
+            from PyQt6.QtCore import QUrl
+            self._tts_player.setSource(QUrl())  # Giai phong file khoa tren Windows
+            
+        if hasattr(self, '_current_tts_file') and self._current_tts_file and os.path.exists(self._current_tts_file):
+            try:
+                os.remove(self._current_tts_file)
+                logger.debug("[SpotlightWindow] Da xoa file TTS rác: %s", self._current_tts_file)
+            except Exception as e:
+                logger.warning("[SpotlightWindow] Khong the xoa file TTS: %s", e)
+            self._current_tts_file = ""
+
     def _start_tts(self, text: str):
-        """
-        Khoi dong TTSWorker trong thread rieng.
-        [FIX-5] Dung TTS cu truoc khi start moi, tranh 2 giong chong cheo.
-        """
+        """Khoi dong TTSWorker de tai file, huy file cu neu co."""
         if not text or text == "REPEAT_LAST_VOICE":
             return
 
-        # Dung TTS cu neu dang chay
         if self._tts_worker and self._tts_worker.isRunning():
             self._tts_worker.terminate()
-            self._tts_worker.wait(300)   # Cho toi da 300ms
+            self._tts_worker.wait(300)
 
-        tts_text = text[:TTS_MAX_CHARS]   # Gioi han de tranh TTS qua dai
+        self._cleanup_tts_file()
+
+        tts_text = text[:TTS_MAX_CHARS]
         self._tts_worker = TTSWorker(tts_text, parent=self)
-        self._tts_worker.finished.connect(self._tts_worker.deleteLater)  # Don bo nho
+        self._tts_worker.finished.connect(self._on_tts_downloaded)
+        self._tts_worker.finished.connect(self._tts_worker.deleteLater)
         self._tts_worker.start()
+
+    def _on_tts_downloaded(self, path: str):
+        """Khi TTSWorker bao ve da tai xong MP3, tien hanh phat."""
+        if not path:
+            return
+        self._current_tts_file = path
+        if hasattr(self, '_tts_player') and self._tts_player:
+            from PyQt6.QtCore import QUrl
+            self._tts_player.setSource(QUrl.fromLocalFile(path))
+            self._tts_player.play()
+        else:
+            # Fallback neu may khong the khoi tao duoc Media Player
+            os.startfile(path)
+            
+    def _on_tts_status_changed(self, status):
+        """Xoa file rac ngay khi AI doc xong."""
+        from PyQt6.QtMultimedia import QMediaPlayer
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            self._cleanup_tts_file()
 
     # ── Dieu khien hien thi cua so ───────────────────────────────────────────
 
@@ -682,11 +717,18 @@ class SpotlightWindow(QWidget):
             self._start_recording_now()
 
     def _on_input_text_changed(self):
-        """Chen ngang: tat loi chao ngay lap tuc neu sep go phim."""
+        """Chen ngang: tat loi chao va tat luon tieng AI neu sep go phim."""
+        from PyQt6.QtMultimedia import QMediaPlayer
+        # Tat Greeting
         if hasattr(self, '_greeting_player') and self._greeting_player:
-            from PyQt6.QtMultimedia import QMediaPlayer
             if self._greeting_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
                 self._greeting_player.stop()
+                
+        # Tat TTS
+        if hasattr(self, '_tts_player') and self._tts_player:
+            if self._tts_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                self._tts_player.stop()
+                self._cleanup_tts_file()
                 
     def _on_greeting_status(self, status):
         """Bat micro khi am thanh loi chao ket thuc (chi ap dung Voice Mode)."""
@@ -783,9 +825,13 @@ class SpotlightWindow(QWidget):
 
     def cleanup(self):
         """
-        [OPT-2] Don dep tat ca Worker Thread khi app thoat.
+        [OPT-2] Don dep tat ca Worker Thread va Media Player khi app thoat.
         Goi tu main.py truoc app.quit() hoac trong finalizer.
         """
+        self._cleanup_tts_file()
+        if hasattr(self, '_greeting_player') and self._greeting_player:
+            self._greeting_player.stop()
+            
         for worker in (self._ai_worker, self._tts_worker, self._voice_worker):
             if worker and worker.isRunning():
                 worker.terminate()
