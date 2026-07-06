@@ -31,22 +31,16 @@ import google.genai as genai
 from google.genai import types as genai_types
 from dotenv import load_dotenv
 
-# python-pptx chỉ dùng để xuất slide thành ảnh
+# python-pptx chỉ dùng để đọc slide text và (tương lai) xuất slide thành ảnh
 try:
     from pptx import Presentation
-    from pptx.util import Inches
-    import io
-    from PIL import Image
     PPTX_AVAILABLE = True
 except ImportError:
     PPTX_AVAILABLE = False
+    Presentation = None  # type: ignore
 
-# ─── Cấu hình Logging ──────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+# ─── Logging ─────────────────────────────────────────────────────────────────
+# [S4-FIX] Không gọi basicConfig ở đây — main.py đã cấu hình toàn cục.
 logger = logging.getLogger("Parser")
 
 # ─── Tải biến môi trường ───────────────────────────────────────────────────────
@@ -324,7 +318,8 @@ Trả về văn bản thuần túy (plain text), không dùng JSON, không thêm
 
             # *** CHỐT CHẶN AN TOÀN: Ngủ 4 giây giữa mỗi slide ***
             # Tránh vượt quá giới hạn 15 requests/phút của Google AI Free Tier
-            if self._model and slide_idx < total_slides:
+            # [BUG-1 FIX] Dùng self._client (genai.Client) thay vì self._model (không tồn tại)
+            if self._client and slide_idx < total_slides:
                 logger.info(f"[PPTXParser] Đang chờ {PPTX_SLEEP_SECONDS}s (chống Rate Limit)...")
                 time.sleep(PPTX_SLEEP_SECONDS)
 

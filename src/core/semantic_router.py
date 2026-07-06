@@ -30,12 +30,9 @@ from google.genai import types as genai_types
 from pydantic import BaseModel, Field, model_validator
 from dotenv import load_dotenv
 
-# ─── Logging ──────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+# ─── Logging ─────────────────────────────────────────────────────────────────
+# [S1-FIX] Không gọi basicConfig ở đây — main.py đã cấu hình toàn cục với
+# FileHandler + StreamHandler. Gọi lại ở module level tạo duplicate log output.
 logger = logging.getLogger("SemanticRouter")
 
 # ─── Config ───────────────────────────────────────────────────────────────────
@@ -143,7 +140,11 @@ class ConversationMemory:
         lines = ["=== Lịch sử hội thoại gần nhất ==="]
         for i, pair in enumerate(self._window, 1):
             lines.append(f"[{i}] Người dùng: {pair['role_user']}")
-            lines.append(f"    Trợ lý: {pair['role_agent'][:200]}...")  # Cắt bớt cho tiết kiệm token
+            # [BUG-8 FIX] Chỉ thêm "..." khi văn bản bị cắt, không thêm cứng khi đã đủ
+            agent_text = pair['role_agent']
+            agent_preview = agent_text[:200]
+            suffix = "..." if len(agent_text) > 200 else ""
+            lines.append(f"    Trợ lý: {agent_preview}{suffix}")
         return "\n".join(lines)
 
     def clear(self):
@@ -256,14 +257,17 @@ Phân tích và trả về JSON routing:"""
         client = self._get_model()
         last_error = None
         current_prompt = prompt
-        system_prompt_combined = _ROUTER_SYSTEM_PROMPT + "\n\n" + current_prompt
 
         for attempt in range(1, MAX_CORRECTION_RETRIES + 1):
             try:
+                # [BUG-5 FIX] Truớc đây system prompt bị ghép thẳng vào contents,
+                # khiến Gemini không nhận diện rõ ràng role của system prompt → JSON output kém.
+                # Đúng chuẩn: dùng system_instruction ringêu (giống SelfCritiqueAgent).
                 response = client.models.generate_content(
                     model=ROUTER_MODEL,
-                    contents=system_prompt_combined,
+                    contents=current_prompt,
                     config=genai_types.GenerateContentConfig(
+                        system_instruction=_ROUTER_SYSTEM_PROMPT,
                         response_mime_type="application/json",
                         temperature=0.0,
                         max_output_tokens=512,
@@ -287,9 +291,11 @@ Phân tích và trả về JSON routing:"""
                     "[SemanticRouter] Lan %d/%d: JSON loi: %s. Dang yeu cau Gemini tu sua...",
                     attempt, MAX_CORRECTION_RETRIES, last_error[:80],
                 )
-                # Lop 3: Nem loi nguoc lai cho Gemini tu sua
-                system_prompt_combined = (
-                    _ROUTER_SYSTEM_PROMPT + "\n\n" + prompt +
+                # Lop 3: Cap nhat current_prompt voi thong bao loi de Gemini tu sua
+                # [BUG-5 FIX] system_instruction van duoc truyen qua GenerateContentConfig
+                # o vong lap ke tiep, chi can cap nhat phan user prompt.
+                current_prompt = (
+                    prompt +
                     f"\n\n[Loi lan truoc]: JSON khong hop le: {last_error}\n"
                     f"[Yeu cau]: Sua lai va chi tra ve JSON thuan tuy."
                 )
@@ -309,12 +315,14 @@ Phân tích và trả về JSON routing:"""
         """
         Lớp 2 Auto-Correction: Dùng Regex bóc chuỗi JSON thuần túy
         khỏi markdown wrapper (```json ... ```) hoặc text rác bọc ngoài.
-        """
-        # Xóa markdown code block wrapper nếu có
-        text = re.sub(r"```(?:json)?\s*", "", text)
-        text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
 
-        # Tìm JSON object hoặc array đầu tiên trong text
+        [S6-FIX] Đơn giản hóa: 1 pattern duy nhất loại cả hai dạng code fence
+        (```json\n...\n``` và ```\n...\n```) thay vì 2 re.sub rìdng rãi.
+        """
+        # Xóa markdown code block: cả dạng ```json ... ``` và ``` ... ```
+        text = re.sub(r"```(?:json)?\s*|\s*```", "", text)
+
+        # Tìm JSON object đầu tiên trong text (greedy để bắt cả nested object)
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             return match.group(0)
