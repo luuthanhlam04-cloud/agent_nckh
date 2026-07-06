@@ -24,6 +24,10 @@ Kien truc da luong (Phan 2.1 & Rui ro 1 - last agent.md):
   FAST  -> Regex khop tuc thi: giu cua so, hien ket qua trong QTextEdit
   AI    -> Goi LLM: mo rong cua so, hien "Dang suy nghi...", doi AIWorker
   NINJA -> Regex lenh nen: hide() ngay, win11toast goc man hinh
+#
+# Voice Mode (Giai doan 5):
+#   - Nhan Ctrl+Shift+Space de bat/tat ghi am (Toggle).
+#   - VoiceWorker (QThread) de nhan dien STT (Whisper) local, Lazy Load.
 
 FIX & OPTIMIZE (v2):
   [FIX-1] setMinimumHeight/setMaximumHeight thay vi setFixedHeight
@@ -74,6 +78,7 @@ BORDER_RADIUS      = 15
 BG_ALPHA           = 210    # Do mo nen (0-255), ~82% opacity
 ANIMATION_DURATION = 250    # ms cho animation mo rong/thu gon
 GLOBAL_HOTKEY      = "ctrl+space"
+VOICE_HOTKEY       = "ctrl+shift+space"
 TTS_MAX_CHARS      = 800    # Gioi han ky tu gui cho TTS (~1-2 phut doc)
 TTS_VOICE          = "vi-VN-NamMinhNeural"   # Giong doc tieng Viet Azure
 
@@ -193,6 +198,35 @@ class TTSWorker(QThread):
 
 
 # ==============================================================================
+#  VoiceWorker - Worker Thread xu ly STT Whisper
+# ==============================================================================
+
+class VoiceWorker(QThread):
+    """
+    Worker thuc hien viec giai ma giong noi bang Whisper local (Lazy Load).
+    Tranh block giao dien khi load model hoac khi dang chay inference (GPU/CPU).
+    """
+    finished = pyqtSignal(str)   # Phat text giai ma ve Main Thread
+
+    def __init__(self, audio_path: str, parent=None):
+        super().__init__(parent)
+        self._audio_path = audio_path
+
+    def run(self):
+        try:
+            from src.ui.voice_engine import WhisperSTT
+            stt = WhisperSTT(model_name="tiny")
+            text = stt.transcribe(self._audio_path)
+            self.finished.emit(text)
+        except ImportError:
+            logger.error("[VoiceWorker] Thieu thu vien src.ui.voice_engine")
+            self.finished.emit("Lỗi: Không tìm thấy engine STT.")
+        except Exception as e:
+            logger.error("[VoiceWorker] Loi: %s", e)
+            self.finished.emit("")
+
+
+# ==============================================================================
 #  GlobalHotkeyThread - Lang nghe phim tat toan cuc
 # ==============================================================================
 
@@ -208,6 +242,7 @@ class GlobalHotkeyThread(QThread):
     keyboard.unhook_all() giai phong hook truoc khi thread ket thuc.
     """
     toggle_signal = pyqtSignal()   # Phat ve Main Thread khi hotkey duoc bam
+    voice_signal = pyqtSignal()    # Phat ve khi bam Ctrl+Shift+Space (Voice Mode)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -230,9 +265,14 @@ class GlobalHotkeyThread(QThread):
             def _on_hotkey():
                 logger.info("[Hotkey] %s bam -> toggle_signal.", GLOBAL_HOTKEY)
                 self.toggle_signal.emit()
+                
+            def _on_voice_hotkey():
+                logger.info("[Hotkey] %s bam -> voice_signal.", VOICE_HOTKEY)
+                self.voice_signal.emit()
 
             keyboard.add_hotkey(GLOBAL_HOTKEY, _on_hotkey)
-            logger.info("[Hotkey] Dang lang nghe %s (can quyen Admin).", GLOBAL_HOTKEY)
+            keyboard.add_hotkey(VOICE_HOTKEY, _on_voice_hotkey)
+            logger.info("[Hotkey] Dang lang nghe %s va %s (can quyen Admin).", GLOBAL_HOTKEY, VOICE_HOTKEY)
             keyboard.wait()   # Blocking: giu thread song - se return khi unhook_all() duoc goi
 
         except ImportError:
@@ -273,6 +313,16 @@ class SpotlightWindow(QWidget):
         self._last_response = ""           # Luu cau tra loi cuoi de copy/toast/repeat
         self._ai_worker:  Optional[AIWorker]  = None
         self._tts_worker: Optional[TTSWorker] = None
+        self._voice_worker: Optional[VoiceWorker] = None
+        
+        # State & Engine cho Voice Mode
+        self._is_recording = False
+        try:
+            from src.ui.voice_engine import VoiceRecorder
+            self._voice_recorder = VoiceRecorder()
+        except ImportError:
+            self._voice_recorder = None
+            logger.warning("[SpotlightWindow] Khong the nap VoiceRecorder (thieu file hoac pyaudio).")
 
         self._setup_window()
         self._setup_ui()
@@ -613,6 +663,58 @@ class SpotlightWindow(QWidget):
         QTimer.singleShot(50, self.activateWindow)
         QTimer.singleShot(60, self.input_box.setFocus)
         logger.info("[SpotlightWindow] Da hien cua so.")
+        
+    def toggle_voice_recording(self):
+        """Bat/tat ghi am khi nhan Ctrl+Shift+Space."""
+        if not self._voice_recorder:
+            self.show_and_focus()
+            self._show_result("Chức năng ghi âm chưa sẵn sàng (thiếu pyaudio).")
+            return
+            
+        if self._is_recording:
+            # Dang ghi am -> Stop
+            self._is_recording = False
+            self.input_box.setPlaceholderText("  Đang giải mã giọng nói...")
+            self.input_box.setEnabled(False)
+            
+            audio_path = self._voice_recorder.stop_recording()
+            if audio_path:
+                self.status_label.setText("   Đang giải mã giọng nói (Whisper)...")
+                self.status_label.show()
+                self._expand_window()
+                
+                self._voice_worker = VoiceWorker(audio_path=audio_path, parent=self)
+                self._voice_worker.finished.connect(self._on_voice_finished)
+                self._voice_worker.finished.connect(self._voice_worker.deleteLater)
+                self._voice_worker.start()
+            else:
+                self.input_box.setEnabled(True)
+                self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
+                self._show_result("Lỗi: Không nhận được dữ liệu âm thanh.")
+        else:
+            # Bat dau ghi am
+            self.show_and_focus()
+            self._is_recording = True
+            self.input_box.setEnabled(False)
+            self.input_box.setPlaceholderText("  Đang nghe... (Bấm Ctrl+Shift+Space lần nữa để gửi)")
+            self._voice_recorder.start_recording()
+
+    def _on_voice_finished(self, text: str):
+        """Nhan ket qua tu WhisperSTT va tu dong gui lenh."""
+        self.status_label.hide()
+        self.input_box.setEnabled(True)
+        self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
+        self.input_box.setFocus()
+        
+        if text.startswith("Lỗi:"):
+            self._show_result(text)
+        elif text:
+            self.input_box.setText(text)
+            self._on_submit()  # Gui ngay vao luong chat
+        else:
+            self._show_result("Không nghe rõ bạn nói gì. Vui lòng thử lại.")
+            
+        self._voice_worker = None
 
     def keyPressEvent(self, event):
         """Escape de an cua so."""
@@ -645,11 +747,17 @@ class SpotlightWindow(QWidget):
         [OPT-2] Don dep tat ca Worker Thread khi app thoat.
         Goi tu main.py truoc app.quit() hoac trong finalizer.
         """
-        for worker in (self._ai_worker, self._tts_worker):
+        for worker in (self._ai_worker, self._tts_worker, self._voice_worker):
             if worker and worker.isRunning():
                 worker.terminate()
                 worker.wait(500)
-        logger.info("[SpotlightWindow] Da don sach worker threads.")
+                
+        if hasattr(self, '_voice_recorder') and self._voice_recorder:
+            try:
+                self._voice_recorder.cleanup()
+            except:
+                pass
+        logger.info("[SpotlightWindow] Da don sach worker threads va pyaudio.")
 
 
 # ==============================================================================
