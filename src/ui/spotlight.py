@@ -227,40 +227,6 @@ class VoiceWorker(QThread):
 
 
 # ==============================================================================
-#  GreetingWorker - Phat loi chao truoc khi ghi am (The "Jarvis" Approach)
-# ==============================================================================
-
-class GreetingWorker(QThread):
-    """
-    Phat file loi chao cuc bo (assets/greeting.mp3) de bao hieu he thong dang hoat dong.
-    Chay dong bo (blocking) trong Worker Thread de dam bao:
-    1. UI khong bi do.
-    2. Loa phat xong hoan toan moi bat dau ghi am (khu tieng vong - Echo).
-    """
-    finished = pyqtSignal()
-
-    def run(self):
-        try:
-            import subprocess
-            greeting_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "greeting.mp3")
-            if os.path.exists(greeting_path):
-                logger.info("[GreetingWorker] Dang phat loi chao...")
-                proc = subprocess.Popen(
-                    ["wmplayer", greeting_path],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                proc.wait()  # Khoa luong: Cho phat xong moi thoat
-                logger.info("[GreetingWorker] Loi chao da phat xong.")
-            else:
-                logger.warning("[GreetingWorker] Khong tim thay file %s", greeting_path)
-        except Exception as e:
-            logger.error("[GreetingWorker] Loi phat loi chao: %s", e)
-        finally:
-            self.finished.emit()
-
-
-# ==============================================================================
 #  GlobalHotkeyThread - Lang nghe phim tat toan cuc
 # ==============================================================================
 
@@ -348,10 +314,10 @@ class SpotlightWindow(QWidget):
         self._ai_worker:  Optional[AIWorker]  = None
         self._tts_worker: Optional[TTSWorker] = None
         self._voice_worker: Optional[VoiceWorker] = None
-        self._greeting_worker: Optional[GreetingWorker] = None
         
         # State & Engine cho Voice Mode
         self._is_recording = False
+        self._waiting_for_greeting = False
         try:
             from src.ui.voice_engine import VoiceRecorder
             self._voice_recorder = VoiceRecorder()
@@ -362,6 +328,7 @@ class SpotlightWindow(QWidget):
         self._setup_window()
         self._setup_ui()
         self._setup_animation()
+        self._setup_greeting_player()
 
     # ── Khoi tao ─────────────────────────────────────────────────────────────
 
@@ -395,21 +362,6 @@ class SpotlightWindow(QWidget):
         layout.setSpacing(8)
 
         # ── O nhap lenh ───────────────────────────────────────────────────────
-        self.input_box = QLineEdit(self)
-        self.input_box.setPlaceholderText("  Hoi Digital Scholar...")
-        self.input_box.setFont(QFont("Segoe UI", 14))
-        self.input_box.setMinimumHeight(44)
-        self.input_box.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: rgba(30, 30, 50, 200);
-                color: rgb({COLOR_TEXT.red()}, {COLOR_TEXT.green()}, {COLOR_TEXT.blue()});
-                border: 1px solid rgba(100, 100, 160, 140);
-                border-radius: 10px;
-                padding: 6px 14px;
-                selection-background-color: rgba(100, 160, 255, 120);
-            }}
-            QLineEdit:focus {{
-                border: 1.5px solid rgba({COLOR_ACCENT.red()}, {COLOR_ACCENT.green()}, {COLOR_ACCENT.blue()}, 200);
             }}
             QLineEdit:disabled {{
                 color: rgba(150, 150, 180, 150);
@@ -699,6 +651,56 @@ class SpotlightWindow(QWidget):
         QTimer.singleShot(60, self.input_box.setFocus)
         logger.info("[SpotlightWindow] Da hien cua so.")
         
+        # Phat cau chao Asynchronous (Text Mode)
+        self._play_greeting(for_voice=False)
+        
+    def _setup_greeting_player(self):
+        """Khoi tao QMediaPlayer ngam de phat cau chao khong do UI."""
+        try:
+            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+            from PyQt6.QtCore import QUrl
+            self._greeting_player = QMediaPlayer(self)
+            self._greeting_audio = QAudioOutput(self)
+            self._greeting_player.setAudioOutput(self._greeting_audio)
+            
+            greeting_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "greeting.mp3")
+            self._greeting_player.setSource(QUrl.fromLocalFile(greeting_path))
+            self._greeting_player.mediaStatusChanged.connect(self._on_greeting_status)
+            logger.info("[SpotlightWindow] Da setup QMediaPlayer cho loi chao.")
+        except Exception as e:
+            logger.warning("[SpotlightWindow] Khong the nap QMediaPlayer: %s", e)
+            self._greeting_player = None
+
+    def _play_greeting(self, for_voice=False):
+        """Phat loi chao. Neu for_voice=True, se doi status_changed de bat micro."""
+        if hasattr(self, '_greeting_player') and self._greeting_player:
+            self._greeting_player.stop()
+            self._waiting_for_greeting = for_voice
+            self._greeting_player.play()
+        elif for_voice:
+            # Khong co player thi thu am luon
+            self._start_recording_now()
+
+    def _on_input_text_changed(self):
+        """Chen ngang: tat loi chao ngay lap tuc neu sep go phim."""
+        if hasattr(self, '_greeting_player') and self._greeting_player:
+            from PyQt6.QtMultimedia import QMediaPlayer
+            if self._greeting_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                self._greeting_player.stop()
+                
+    def _on_greeting_status(self, status):
+        """Bat micro khi am thanh loi chao ket thuc (chi ap dung Voice Mode)."""
+        from PyQt6.QtMultimedia import QMediaPlayer
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            if getattr(self, '_is_recording', False) and getattr(self, '_waiting_for_greeting', False):
+                self._start_recording_now()
+
+    def _start_recording_now(self):
+        """Bat micro chinh thuc."""
+        self._waiting_for_greeting = False
+        self.input_box.setPlaceholderText("  Xin chào! Tôi đang nghe... (Bấm Ctrl+Shift+Space lần nữa để gửi)")
+        self._voice_recorder.start_recording()
+        
     def toggle_voice_recording(self):
         """Bat/tat ghi am khi nhan Ctrl+Shift+Space."""
         if not self._voice_recorder:
@@ -733,24 +735,8 @@ class SpotlightWindow(QWidget):
             self.input_box.setEnabled(False)
             self.input_box.setPlaceholderText("  Đang gọi trợ lý... (Vui lòng chờ tiếng Bíp)")
             
-            # Dung worker truoc neu dang chay
-            if self._greeting_worker and self._greeting_worker.isRunning():
-                self._greeting_worker.terminate()
-                self._greeting_worker.wait()
-                
-            self._greeting_worker = GreetingWorker(parent=self)
-            self._greeting_worker.finished.connect(self._on_greeting_finished)
-            self._greeting_worker.finished.connect(self._greeting_worker.deleteLater)
-            self._greeting_worker.start()
-
-    def _on_greeting_finished(self):
-        """Duoc goi khi loi chao da phat xong (hoac khong the phat). Bat dau thu am."""
-        if not self._is_recording:
-            return  # Nguoi dung da huy giua chung
-            
-        self.input_box.setPlaceholderText("  Xin chào! Tôi đang nghe... (Bấm Ctrl+Shift+Space lần nữa để gửi)")
-        self._voice_recorder.start_recording()
-        self._greeting_worker = None
+            # Phat loi chao Synchronous (Voice Mode)
+            self._play_greeting(for_voice=True)
 
     def _on_voice_finished(self, text: str):
         """Nhan ket qua tu WhisperSTT va tu dong gui lenh."""
@@ -800,7 +786,7 @@ class SpotlightWindow(QWidget):
         [OPT-2] Don dep tat ca Worker Thread khi app thoat.
         Goi tu main.py truoc app.quit() hoac trong finalizer.
         """
-        for worker in (self._ai_worker, self._tts_worker, self._voice_worker, self._greeting_worker):
+        for worker in (self._ai_worker, self._tts_worker, self._voice_worker):
             if worker and worker.isRunning():
                 worker.terminate()
                 worker.wait(500)
