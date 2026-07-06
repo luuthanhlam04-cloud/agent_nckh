@@ -72,8 +72,13 @@ class VoiceRecorder:
             try:
                 data = self._stream.read(self.chunk, exception_on_overflow=False)
                 self.frames.append(data)
+            except OSError as e:
+                # Loi the xay ra neu mic bi rut giua chung
+                logger.error("[VoiceRecorder] Loi doc audio (Microphone ngat ket noi?): %s", e)
+                self._is_recording = False
+                break
             except Exception as e:
-                logger.error("[VoiceRecorder] Loi doc audio: %s", e)
+                logger.error("[VoiceRecorder] Loi khong xac dinh khi doc audio: %s", e)
                 break
 
     def stop_recording(self) -> Optional[str]:
@@ -84,11 +89,16 @@ class VoiceRecorder:
             
         if self._stream:
             try:
-                self._stream.stop_stream()
+                # Kiem tra xem stream co bi stop dot ngot chua truoc khi call
+                if not self._stream.is_stopped():
+                    self._stream.stop_stream()
                 self._stream.close()
+            except OSError as e:
+                logger.warning("[VoiceRecorder] Khong the dong stream do thiet bi da mat: %s", e)
             except Exception as e:
                 logger.error("[VoiceRecorder] Loi dong stream: %s", e)
-            self._stream = None
+            finally:
+                self._stream = None
             
         if not self.frames:
             logger.warning("[VoiceRecorder] Khong co du lieu audio.")
@@ -114,9 +124,14 @@ class VoiceRecorder:
             return None
 
     def cleanup(self):
-        """Dong pyaudio."""
+        """Dong pyaudio an toan."""
         if self.pyaudio_instance:
-            self.pyaudio_instance.terminate()
+            try:
+                self.pyaudio_instance.terminate()
+            except Exception as e:
+                logger.error("[VoiceRecorder] Loi terminate pyaudio: %s", e)
+            finally:
+                self.pyaudio_instance = None
 
 
 class WhisperSTT:
