@@ -7,7 +7,7 @@ pyperclip
 win11toast
 
 # ─── Tầng AI, LLM & Router ───────────────────────────────────────────────────
-google-generativeai
+google-genai
 openai
 pydantic
 
