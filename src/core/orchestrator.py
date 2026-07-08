@@ -191,7 +191,7 @@ class WorkerEngine:
                     "bị bộ lọc an toàn từ chối xử lý. Vui lòng thử diễn đạt lại câu hỏi."
                 )
             logger.error(f"[WorkerEngine] Lỗi gọi API: {e}")
-            raise
+            return f"Hệ thống lõi gặp sự cố kết nối API: {str(e)[:100]}. Vui lòng thử lại sau."
 
     def close(self):
         """Giải phóng client sau khi dùng."""

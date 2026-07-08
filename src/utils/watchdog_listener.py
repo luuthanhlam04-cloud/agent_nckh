@@ -41,11 +41,13 @@ SUPPORTED_EXTENSIONS = {".pdf", ".pptx", ".ppt"}
 # ══════════════════════════════════════════════════════════════════════════════
 #  InboxEventHandler - Bắt sự kiện file mới
 # ══════════════════════════════════════════════════════════════════════════════
+import time
+
 class InboxEventHandler(FileSystemEventHandler):
     """
-    Lắng nghe sự kiện 'file mới được tạo' trong thư mục 01_Inbox/.
-    Khi phát hiện file hợp lệ (PDF/PPTX), đẩy đường dẫn vào asyncio Queue
-    để Worker Thread xử lý ngầm.
+    Lắng nghe sự kiện 'file mới được tạo' hoặc 'chỉnh sửa' trong thư mục 01_Inbox/.
+    Có tích hợp cơ chế Debounce (Đệm thời gian 2s) để tránh Windows bắn quá nhiều
+    sự kiện on_modified liên tiếp gây gọi API trùng lặp.
     """
 
     def __init__(self, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop):
@@ -57,9 +59,16 @@ class InboxEventHandler(FileSystemEventHandler):
         super().__init__()
         self._queue = queue
         self._loop = loop
+        self._debounce_dict = {}
 
-    def on_created(self, event: FileCreatedEvent):
-        """Được gọi khi có file mới xuất hiện trong thư mục được giám sát."""
+    def on_created(self, event):
+        self._handle_event(event)
+
+    def on_modified(self, event):
+        self._handle_event(event)
+
+    def _handle_event(self, event):
+        """Xử lý chung cho created và modified với Debounce."""
         if event.is_directory:
             return
 
@@ -67,18 +76,26 @@ class InboxEventHandler(FileSystemEventHandler):
         ext = file_path.suffix.lower()
 
         if ext not in SUPPORTED_EXTENSIONS:
-            logger.debug(f"[Watchdog] Bỏ qua file không hỗ trợ: {file_path.name}")
             return
 
         # Bỏ qua file ẩn (file tạm của hệ điều hành, .DS_Store, ~$temp.pptx...)
         if file_path.name.startswith(".") or file_path.name.startswith("~$"):
             return
 
-        logger.info(f"[Watchdog] 📥 Phát hiện tài liệu mới: {file_path.name}")
+        current_time = time.time()
+        path_str = str(file_path)
+        last_time = self._debounce_dict.get(path_str, 0)
+
+        # DEBOUNCE: Nếu chưa quá 2 giây kể từ sự kiện cuối, bỏ qua
+        if current_time - last_time < 2.0:
+            return
+
+        self._debounce_dict[path_str] = current_time
+        logger.info(f"[Watchdog] 📥 Phát hiện tài liệu mới (Debounced): {file_path.name}")
 
         # Thread-safe: đưa đường dẫn vào asyncio Queue từ OS thread
         asyncio.run_coroutine_threadsafe(
-            self._queue.put(str(file_path)),
+            self._queue.put(path_str),
             self._loop
         )
 
