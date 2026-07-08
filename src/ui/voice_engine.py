@@ -135,51 +135,56 @@ class VoiceRecorder:
 
 
 class WhisperSTT:
-    """Nhan dien giong noi (STT) su dung openai-whisper (tiny) voi Lazy Loading."""
+    """Nhan dien giong noi (STT) su dung openai-whisper (tiny) voi Pre-Loading (Singleton)."""
     
-    def __init__(self, model_name: str = "tiny"):
-        self.model_name = model_name
-        
+    _instance = None
+    _model = None
+
+    def __new__(cls, model_name: str = "tiny"):
+        if cls._instance is None:
+            cls._instance = super(WhisperSTT, cls).__new__(cls)
+            cls._instance.model_name = model_name
+            cls._instance._load_model()
+        return cls._instance
+
+    def _load_model(self):
+        """Nap model Whisper vao RAM (chi lam 1 lan)."""
+        try:
+            import whisper
+            import torch
+            
+            logger.info(f"[WhisperSTT] Dang nap model '{self.model_name}' vao RAM (Pre-load)...")
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.__class__._model = whisper.load_model(self.model_name, device=device)
+            logger.info("[WhisperSTT] Da nap model Whisper thanh cong.")
+        except ImportError as e:
+            logger.error(f"[WhisperSTT] Chua cai thu vien whisper: {e}. Chay: pip install openai-whisper torch")
+        except Exception as e:
+            logger.error(f"[WhisperSTT] Loi nap model: {e}")
+
     def transcribe(self, audio_path: str) -> str:
         """
-        Nao model Whisper, dich audio ra text, sau do huy model.
-        Yeu cau: pip install openai-whisper
+        Dich audio ra text. Model da duoc nap san nen cuc nhanh.
         """
         if not audio_path or not os.path.exists(audio_path):
             return ""
             
         text = ""
-        model = None
         try:
-            import whisper
             import torch
-            
-            logger.info(f"[WhisperSTT] Dang nap model '{self.model_name}' vao RAM...")
-            # Kiem tra CUDA neu co
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            # Lazy Load
-            model = whisper.load_model(self.model_name, device=device)
-            
+            if self.__class__._model is None:
+                return "Lỗi: Model Whisper chưa được nạp. Hãy kiểm tra logs."
+                
             logger.info("[WhisperSTT] Dang giai ma audio...")
             # Nhan dien (force tieng Viet de nhanh & chuan hon)
-            result = model.transcribe(audio_path, language="vi", fp16=torch.cuda.is_available())
+            result = self.__class__._model.transcribe(audio_path, language="vi", fp16=torch.cuda.is_available())
             text = result.get("text", "").strip()
             logger.info(f"[WhisperSTT] Ket qua: '{text}'")
             
-        except ImportError as e:
-            logger.error(f"[WhisperSTT] Chua cai thu vien whisper: {e}. Chay: pip install openai-whisper torch")
-            text = "Lỗi: Hệ thống chưa cài đặt thư viện Whisper (openai-whisper)."
         except Exception as e:
             logger.error(f"[WhisperSTT] Loi giai ma: {e}")
             text = f"Lỗi giải mã giọng nói: {str(e)[:100]}"
         finally:
-            # Lazy Unload - Giai phong RAM
-            if model is not None:
-                del model
-            # Bat buoc gom rac
-            gc.collect()
-            logger.info("[WhisperSTT] Da xoa model khoi RAM.")
-            
             # Xoa luon file audio tam
             try:
                 os.remove(audio_path)

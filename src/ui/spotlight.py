@@ -53,6 +53,7 @@ import sys
 import asyncio
 import logging
 import tempfile
+import threading
 from typing import Optional, Any, Callable
 
 from PyQt6.QtWidgets import (
@@ -217,6 +218,8 @@ class GlobalHotkeyThread(QThread):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._running = True
+        # Set daemon to True to prevent zombie process if app crashes
+        self.setTerminationEnabled(True)
 
     def stop_listening(self):
         """Dung sach hotkey hook. Goi tu Main Thread truoc khi app thoat."""
@@ -289,8 +292,10 @@ class SpotlightWindow(QWidget):
         self._is_recording = False
         self._waiting_for_greeting = False
         try:
-            from src.ui.voice_engine import VoiceRecorder
+            from src.ui.voice_engine import VoiceRecorder, WhisperSTT
             self._voice_recorder = VoiceRecorder()
+            # Preload WhisperSTT in background to avoid freezing UI
+            threading.Thread(target=lambda: WhisperSTT(model_name="tiny"), daemon=True).start()
         except ImportError:
             self._voice_recorder = None
             logger.warning("[SpotlightWindow] Khong the nap VoiceRecorder (thieu file hoac pyaudio).")
