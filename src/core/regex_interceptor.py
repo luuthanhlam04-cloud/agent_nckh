@@ -11,20 +11,17 @@ Hàm điều phối chính:
     → (result: str, mode: "ninja")  → hide() cửa sổ + win11toast
     → (None, None)                  → không khớp, đẩy xuống AIWorker
 
-Các module con (7 hàm theo README.md):
-  1. filter_whisper_hallucination  - lọc câu rác khoảng lặng Whisper
-  2. check_time_queries            - tra giờ/ngày tĩnh không tốn token
-  3. check_os_commands             - mở app/web hệ thống Windows
-  4. check_and_save_to_obsidian    - ghi nhanh vào Profile.md Obsidian
-  5. force_web_search_override     - ép tra mạng bỏ qua RAG local
-  6. trigger_docx_export           - kích hoạt xuất báo cáo Word
-  7. check_ninja_ux_commands       - copy clipboard, toast, đọc lại
+Kiến trúc Hybrid V5 (Chống False Positive tuyệt đối):
+  1. Khóa chặt 2 đầu (^...$) cho các câu lệnh tiện ích (Time, Ninja UX).
+  2. Bắt buộc Action-Verb Anchor (mở|tìm|lưu...) ở đầu câu cho các lệnh hệ thống.
+  3. Nhường toàn bộ các câu không mang tính chất "mệnh lệnh" cho Semantic Router.
 """
 
 import os
 import re
 import subprocess
 import logging
+import urllib.parse
 from datetime import datetime
 from typing import Optional, Tuple, Any
 
@@ -34,67 +31,50 @@ logger = logging.getLogger("RegexInterceptor")
 #  CÁC HẰNG SỐ CẤU HÌNH
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Tên file memory trong Obsidian (Chức năng 7 - Bước 7.2 spec)
-OBSIDIAN_MEMORY_FILE = "03_Agent_Memory/Profile.md"
+OBSIDIAN_MEMORY_FILE = os.path.join("03_Agent_Memory", "Profile.md")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MODULE 1: Lọc câu rác khoảng lặng Whisper (STT Hallucination Filter)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _WHISPER_HALLUCINATION_PATTERN = re.compile(
-    r"^(Cảm ơn các bạn|Xin chào các bạn|Subtitles by|Amara\.org"
+    r"(Cảm ơn các bạn|Xin chào các bạn|Subtitles by|Amara\.org"
     r"|Cảm ơn quý vị|Thanks for watching|Chúc một ngày tốt lành"
-    r"|Hẹn gặp lại|Subscribe|Like và share|Nhớ đăng ký kênh).*",
+    r"|Hẹn gặp lại|Subscribe|Like và share|Nhớ đăng ký kênh)",
     re.IGNORECASE,
 )
 
-
 def filter_whisper_hallucination(audio_text: str) -> Optional[str]:
-    """
-    Lọc câu rác từ khoảng lặng âm thanh của Whisper.
-
-    Returns:
-        None  nếu là câu rác → bỏ qua hoàn toàn.
-        str   nếu là câu thật → tiếp tục xử lý.
-    """
-    if _WHISPER_HALLUCINATION_PATTERN.search(audio_text.strip()):
+    """Lọc rác Whisper. Chỉ lọc nếu câu ngắn gọn mang tính chất lỗi STT."""
+    if len(audio_text.split()) < 10 and _WHISPER_HALLUCINATION_PATTERN.search(audio_text.strip()):
         logger.info("[Interceptor] Whisper hallucination bị chặn: '%s'", audio_text[:50])
         return None
     return audio_text
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 2: Tra cứu thời gian và ngày tháng tĩnh (0 token)
+#  MODULE 2: Tra cứu thời gian và ngày tháng tĩnh (Khóa 2 đầu)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _TIME_PATTERN = re.compile(
-    r"^(mấy giờ|bây giờ là mấy giờ|giờ hiện tại|quản gia mấy giờ rồi|mấy giờ rồi).*",
+    r"^(?:quản gia|hãy|cho tôi biết|xem)?\s*(?:bây giờ là|bây giờ)?\s*(?:mấy giờ|giờ hiện tại)(?:\s+rồi)?[\s\.\?!]*$",
     re.IGNORECASE,
 )
 _DATE_PATTERN = re.compile(
-    r"^(hôm nay là ngày bao nhiêu|hôm nay ngày mấy|ngày hiện tại|hôm nay là ngày mấy).*",
+    r"^(?:quản gia|hãy|cho tôi biết|xem)?\s*(?:hôm nay|ngày hiện tại)\s*(?:là ngày bao nhiêu|ngày mấy|ngày bao nhiêu|là ngày mấy)[\s\.\?!]*$",
     re.IGNORECASE,
 )
 
-
 def check_time_queries(user_input: str) -> Optional[str]:
-    """
-    Trả lời câu hỏi về giờ/ngày tháng trực tiếp từ đồng hồ hệ thống.
-    Không tốn 1 token nào.
-
-    Returns:
-        str  nếu khớp → kết quả trả về ngay (mode: fast).
-        None nếu không khớp.
-    """
     text = user_input.strip()
     now = datetime.now()
 
-    if _TIME_PATTERN.search(text):
+    if _TIME_PATTERN.match(text):
         result = f"Bây giờ là {now.strftime('%H:%M')} phút."
         logger.info("[Interceptor] Time query → %s", result)
         return result
 
-    if _DATE_PATTERN.search(text):
+    if _DATE_PATTERN.match(text):
         result = f"Hôm nay là ngày {now.strftime('%d/%m/%Y')}."
         logger.info("[Interceptor] Date query → %s", result)
         return result
@@ -103,16 +83,56 @@ def check_time_queries(user_input: str) -> Optional[str]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 3: Điều khiển HĐH và khởi chạy phần mềm (OS Control)
+#  MODULE 3.1: Tìm kiếm web thông minh (Action-Verb Anchored)
 # ══════════════════════════════════════════════════════════════════════════════
 
-_OS_PATTERN = re.compile(
-    r"^(?:hãy|quản gia|mày)?\s*(mở|bật|khởi động|vào)\s+"
-    r"(youtube|zalo|zotero|chrome|word|thư mục|vs code|vscode|visual studio).*",
+_SMART_SEARCH_PATTERN = re.compile(
+    r"^(?:hãy|quản gia|mày|nhờ bạn|giúp tôi)?\s*(?:mở|tìm|kiếm|tìm kiếm|search|bật|tra)\s+(.+?)(?:\s+(?:trên|ở|trong)\s+(youtube|google|gg))?\s*$",
     re.IGNORECASE,
 )
 
-# Map từ khóa → lệnh shell Windows
+def check_smart_web_search(user_input: str) -> Optional[str]:
+    match = _SMART_SEARCH_PATTERN.search(user_input.strip())
+    if not match:
+        return None
+
+    query = match.group(1).strip()
+    platform = match.group(2).strip().lower() if match.group(2) else None
+    
+    # Auto default to YouTube for multimedia queries
+    if not platform:
+        if re.search(r"^(bài hát|bài|video|clip|nhạc|phim)\b", query, re.IGNORECASE):
+            platform = "youtube"
+        else:
+            return None # Trả về RAG/OS Command
+            
+    encoded_query = urllib.parse.quote(query)
+    
+    if platform == "youtube":
+        url = f"https://www.youtube.com/results?search_query={encoded_query}"
+        subprocess.Popen(f'start chrome "{url}"', shell=True)
+        logger.info("[Interceptor] Smart Search YouTube: %s", query)
+        return f"Đã tìm kiếm trên Youtube: {query}"
+        
+    elif platform in ["google", "gg"]:
+        url = f"https://www.google.com/search?q={encoded_query}"
+        subprocess.Popen(f'start chrome "{url}"', shell=True)
+        logger.info("[Interceptor] Smart Search Google: %s", query)
+        return f"Đã tìm kiếm trên Google: {query}"
+
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODULE 3: Điều khiển HĐH và khởi chạy phần mềm (Action-Verb Anchored)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_OS_PATTERN = re.compile(
+    r"^(?:hãy|quản gia|mày|làm ơn)?\s*(?:mở|bật|khởi động|vào|chạy)\s+"
+    r"(youtube|zalo|zotero|chrome|word|thư mục|vs code|vscode|visual studio)\b.*",
+    re.IGNORECASE,
+)
+
 _APP_COMMANDS = {
     "youtube":        "start chrome https://youtube.com",
     "zalo":           "start zalo",
@@ -125,22 +145,13 @@ _APP_COMMANDS = {
     "thư mục":        "explorer .",
 }
 
-
 def check_os_commands(user_input: str) -> Optional[str]:
-    """
-    Phân tích lệnh mở ứng dụng/web và thực thi ngay bằng os.system().
-
-    Returns:
-        str  nếu khớp và đã thực thi → thông báo xác nhận (mode: ninja).
-        None nếu không khớp.
-    """
     match = _OS_PATTERN.search(user_input.strip())
     if not match:
         return None
 
-    app_keyword = match.group(2).strip().lower()
+    app_keyword = match.group(1).strip().lower()
 
-    # Tìm lệnh phù hợp nhất trong map
     command = None
     for key, cmd in _APP_COMMANDS.items():
         if key in app_keyword:
@@ -148,44 +159,28 @@ def check_os_commands(user_input: str) -> Optional[str]:
             break
 
     if command:
-        # [M2-FIX] Dùng subprocess.Popen (non-blocking) thay vì os.system() (blocking).
-        # os.system() giữ Main Thread đợi đến khi lệnh shell kết thúc — có thể đơ UI Qt.
-        # subprocess.Popen trả về ngay lập tức, ứng dụng mở nghiềng trong nền.
         subprocess.Popen(command, shell=True)
         logger.info("[Interceptor] OS Command: %s → %s", app_keyword, command)
-        return f"Đã mở {match.group(2).strip()} cho sếp."
+        return f"Đã mở {match.group(1).strip()} cho bạn."
 
-    logger.warning("[Interceptor] Không tìm thấy lệnh cho app: %s", app_keyword)
     return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 4: Ghi nhớ ký ức nhanh vào Obsidian (Long-term Memory Update)
+#  MODULE 4: Ghi nhớ ký ức nhanh vào Obsidian (Action-Verb Anchored)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _MEMORY_PATTERN = re.compile(
-    r"^(?:hãy|nhờ bạn|mày|quản gia|giúp tôi)?\s*"
-    r"(lưu|nhớ|ghi nhớ|lưu lại|lưu thông tin|note lại|thêm vào ghi chú"
-    r"|nhớ giúp tôi|ghi vào sổ|nhớ là)\s*"
-    r"(?:rằng|là|thông tin)?\s+(.+)",
+    r"^(?:(?:hãy|nhờ bạn|mày|quản gia|giúp tôi)\s+)?(?:lưu|nhớ|ghi nhớ|lưu lại|note|thêm vào ghi chú|ghi sổ)\b.*?(?:rằng|là|thông tin)?\s+(.+)",
     re.IGNORECASE,
 )
 
-
 def check_and_save_to_obsidian(user_input: str, vault_path: str) -> Optional[str]:
-    """
-    Ghi nội dung nhanh vào file Profile.md trong Obsidian Vault.
-    Chạy hoàn toàn cục bộ, không tốn token.
-
-    Returns:
-        str  nếu khớp và đã ghi → thông báo xác nhận (mode: ninja).
-        None nếu không khớp.
-    """
     match = _MEMORY_PATTERN.search(user_input.strip())
     if not match:
         return None
 
-    content_to_save = match.group(2).strip()
+    content_to_save = match.group(1).strip()
     memory_file = os.path.join(vault_path, OBSIDIAN_MEMORY_FILE)
 
     try:
@@ -197,56 +192,38 @@ def check_and_save_to_obsidian(user_input: str, vault_path: str) -> Optional[str
         return f"Đã ghi nhớ vào Obsidian: {content_to_save}"
     except Exception as e:
         logger.error("[Interceptor] Lỗi ghi Obsidian: %s", e)
-        return f"Lỗi khi ghi vào Obsidian: {str(e)[:80]}"
+        return f"Lỗi khi ghi Obsidian: {str(e)[:80]}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 5: Ép tra mạng, bỏ qua RAG local (Force Web Search Override)
+#  MODULE 5: Ép tra mạng, bỏ qua RAG local (Action-Verb Anchored)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _FORCE_WEB_PATTERN = re.compile(
-    r"(tra mạng bắt buộc|bỏ qua dữ liệu cũ|tìm trên mạng"
-    r"|tìm trên google|search google|cập nhật mạng ngay)\s*(.*)",
+    r"^(?:(?:hãy|nhờ bạn|mày|quản gia|giúp tôi)\s+)?(?:tra mạng|tìm trên mạng|tìm google|bỏ qua RAG|bỏ qua dữ liệu cũ|cập nhật mạng)\s*(.*)",
     re.IGNORECASE,
 )
 
-
 def force_web_search_override(user_input: str) -> Optional[dict]:
-    """
-    Phát hiện lệnh ép tra mạng bỏ qua kho RAG cục bộ.
-
-    Returns:
-        dict {"intent": "FORCE_WEB", "query": str} nếu khớp.
-        None nếu không khớp.
-    """
     match = _FORCE_WEB_PATTERN.search(user_input.strip())
     if not match:
         return None
 
-    query = match.group(2).strip() or user_input
+    query = match.group(1).strip() or user_input
     logger.info("[Interceptor] Force web search: '%s'", query[:50])
     return {"intent": "FORCE_WEB", "query": query}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 6: Kích hoạt xuất báo cáo Word (.docx)
+#  MODULE 6: Kích hoạt xuất báo cáo Word (Action-Verb Anchored)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _DOCX_PATTERN = re.compile(
-    r"(xuất ra word|xuất báo cáo|lưu thành file word"
-    r"|tổng hợp thành file word|viết báo cáo word)\s*(.*)",
+    r"^(?:(?:hãy|nhờ bạn|mày|quản gia|giúp tôi)\s+)?(?:xuất|lưu|tổng hợp|viết).*?(?:ra|thành|báo cáo)?\s*(?:file\s+)?(word|docx)\b\s*(.*)",
     re.IGNORECASE,
 )
 
-
 def trigger_docx_export(user_input: str) -> Optional[dict]:
-    """
-    Phát hiện lệnh kích hoạt xuất báo cáo học thuật ra .docx.
-
-    Returns:
-        dict {"intent": "EXPORT_DOCX", "topic": str} nếu khớp.
-        None nếu không khớp.
-    """
     match = _DOCX_PATTERN.search(user_input.strip())
     if not match:
         return None
@@ -257,64 +234,50 @@ def trigger_docx_export(user_input: str) -> Optional[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 7: Lệnh tương tác Ninja UX (copy, toast, đọc lại)
+#  MODULE 7: Lệnh tương tác Ninja UX (Khóa 2 đầu cực kỳ chặt chẽ)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _COPY_PATTERN = re.compile(
-    r"^(copy câu vừa rồi|sao chép câu trả lời|sao chép lại).*",
-    re.IGNORECASE,
+    r"^(?:quản gia|hãy)?\s*(?:copy|sao chép)(?:\s+(?:câu|trả lời|lại|đó))?[\s\.\?!]*$", 
+    re.IGNORECASE
 )
 _TOAST_PATTERN = re.compile(
-    r"^(hiện chữ lên|bật thông báo text|tao chưa nghe rõ|hiện text|hiện lên màn hình).*",
-    re.IGNORECASE,
+    r"^(?:quản gia|hãy)?\s*(?:hiện chữ|hiện text|in ra màn hình|bật thông báo text|tao chưa nghe rõ)[\s\.\?!]*$", 
+    re.IGNORECASE
 )
 _REPEAT_PATTERN = re.compile(
-    r"^(nói lại xem|đọc lại câu vừa rồi|quản gia đọc lại|nhắc lại đi).*",
-    re.IGNORECASE,
+    r"^(?:quản gia|hãy)?\s*(?:nói lại|đọc lại|nhắc lại|nói lại đi|đọc lại xem)(?:\s+(?:đi|xem|câu vừa rồi))?[\s\.\?!]*$", 
+    re.IGNORECASE
 )
-
 
 def check_ninja_ux_commands(
     user_input: str,
     last_response: str = "",
 ) -> Optional[str]:
-    """
-    Xử lý các lệnh tiện ích Ninja UX:
-      - "copy câu vừa rồi" → copy vào clipboard Windows
-      - "hiện chữ lên"     → toast notification win11toast
-      - "đọc lại xem"      → trả về sentinel REPEAT_LAST_VOICE
-
-    Returns:
-        str  nếu khớp.
-        None nếu không khớp.
-    """
     text = user_input.strip()
 
-    # Lệnh copy clipboard
-    if _COPY_PATTERN.search(text):
+    if _COPY_PATTERN.match(text):
         if last_response:
             try:
                 import pyperclip
                 pyperclip.copy(last_response)
-                logger.info("[Interceptor] Đã copy vào clipboard (%d ký tự).", len(last_response))
+                logger.info("[Interceptor] Đã copy vào clipboard.")
                 return "Đã sao chép toàn bộ câu trả lời cuối vào bộ nhớ tạm hệ thống."
             except ImportError:
-                return "Thư viện pyperclip chưa cài. Hãy chạy: pip install pyperclip"
+                return "Thư viện pyperclip chưa cài."
         return "Chưa có câu trả lời nào để copy."
 
-    # Lệnh hiện toast text
-    if _TOAST_PATTERN.search(text):
+    if _TOAST_PATTERN.match(text):
         if last_response:
             try:
                 from win11toast import toast
                 toast("Digital Scholar", last_response[:200], duration="long")
                 logger.info("[Interceptor] Đã hiện toast notification.")
             except ImportError:
-                logger.warning("[Interceptor] win11toast chưa cài.")
+                pass
         return "Đã hiển thị khung chữ bổ trợ ở góc màn hình Windows."
 
-    # Lệnh đọc lại (sentinel cho TTS)
-    if _REPEAT_PATTERN.search(text):
+    if _REPEAT_PATTERN.match(text):
         logger.info("[Interceptor] Repeat last voice triggered.")
         return "REPEAT_LAST_VOICE"
 
@@ -331,71 +294,53 @@ def intercept(
     last_response: str = "",
 ) -> Tuple[Optional[Any], Optional[str]]:
     """
-    Cổng đánh chặn trung tâm. Gọi hàm này TRƯỚC khi đẩy vào AIWorker.
-
-    Thứ tự ưu tiên:
-      1. Whisper hallucination filter
-      2. Time/Date queries       (fast)
-      3. Ninja UX commands       (ninja/fast)
-      4. OS commands             (ninja)
-      5. Save to Obsidian        (ninja)
-      6. Force web search        (fast - caller nhận dict)
-      7. Docx export             (fast - caller nhận dict)
-
-    Args:
-        user_input    : Văn bản người dùng nhập.
-        vault_path    : Đường dẫn gốc Obsidian Vault (cho Module 4).
-        last_response : Câu trả lời AI gần nhất trong RAM (cho Module 7).
-
-    Returns:
-        (result, mode)
-        - (None, None)   → không khớp, đẩy xuống LLM
-        - (str,  "fast") → hiển thị trong UI, giữ cửa sổ
-        - (str,  "ninja")→ hide() cửa sổ + win11toast nếu cần
-        - (dict, "fast") → caller xử lý dict (FORCE_WEB, EXPORT_DOCX)
+    Cổng đánh chặn trung tâm. (Hybrid Architecture)
+    Bảo đảm 0 False Positives cho RAG nhờ cơ chế Action-Verb Anchoring.
     """
     text = user_input.strip()
     if not text:
         return None, None
-
-    # ── Lớp 1: Whisper hallucination ───────────────────────────────────────────
+        
+    # ── Lớp 1: Whisper hallucination
     if filter_whisper_hallucination(text) is None:
-        # [BUG-7 FIX] Trả (None, None) thay vì ("", "ninja") → nhất quán với mọi caller:
-        # Spotlight kiểm tra `result is not None` → None sẽ bỏ qua đúng cách.
-        # Không gọi hide() để tránh ẩn cửa sổ mà không có lý do thấy được.
         return None, None
 
-    # ── Lớp 2: Truy vấn thời gian/ngày tháng ─────────────────────────────────
+    # ── Lớp 2: Truy vấn thời gian/ngày tháng (Khóa 2 đầu)
     result = check_time_queries(text)
     if result:
         return result, "fast"
 
-    # ── Lớp 3: Ninja UX (copy, toast, repeat) ────────────────────────────────
+    # ── Lớp 7: Ninja UX (copy, toast, repeat) (Khóa 2 đầu)
     result = check_ninja_ux_commands(text, last_response)
     if result is not None:
         mode = "ninja" if result == "REPEAT_LAST_VOICE" else "fast"
         return result, mode
 
-    # ── Lớp 4: Lệnh OS (mở app, mở web) ─────────────────────────────────────
+    # ── Lớp 3.1: Tìm kiếm web thông minh (Action Verb)
+    result = check_smart_web_search(text)
+    if result:
+        return result, "ninja"
+
+    # ── Lớp 3: Lệnh OS (mở app tĩnh) (Action Verb)
     result = check_os_commands(text)
     if result:
         return result, "ninja"
 
-    # ── Lớp 5: Ghi nhớ Obsidian ──────────────────────────────────────────────
+    # ── Lớp 4: Ghi nhớ Obsidian (Action Verb)
     if vault_path:
         result = check_and_save_to_obsidian(text, vault_path)
         if result:
             return result, "ninja"
 
-    # ── Lớp 6: Force web search override ─────────────────────────────────────
+    # ── Lớp 5: Force web search override (Action Verb)
     result = force_web_search_override(text)
     if result:
         return result, "fast"
 
-    # ── Lớp 7: Docx export ────────────────────────────────────────────────────
+    # ── Lớp 6: Docx export (Action Verb)
     result = trigger_docx_export(text)
     if result:
         return result, "fast"
 
-    # Không khớp bất kỳ lớp nào → đẩy xuống LLM
+    # TẤT CẢ các câu còn lại (không có Action Verb, không đúng pattern UX) -> RAG
     return None, None
