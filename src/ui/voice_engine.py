@@ -84,7 +84,9 @@ class VoiceRecorder:
     def stop_recording(self) -> Optional[str]:
         """Dung thu am va luu vao file WAV. Tra ve duong dan file."""
         self._is_recording = False
-        if hasattr(self, '_record_thread') and self._record_thread.is_alive():
+        # [B2-FIX] Kiem tra _record_thread ton tai va dang chay truoc khi join
+        # Tranh AttributeError neu start_recording() da that bai truoc do
+        if hasattr(self, '_record_thread') and self._record_thread is not None and self._record_thread.is_alive():
             self._record_thread.join(timeout=1.0)
             
         if self._stream:
@@ -145,6 +147,11 @@ class WhisperSTT:
             cls._instance = super(WhisperSTT, cls).__new__(cls)
             cls._instance.model_name = model_name
             cls._instance._load_model()
+            # [B1-FIX] Neu load that bai (model van la None) -> reset instance
+            # de lan goi sau co the thu lai, tranh bi ket voi instance hong.
+            if cls._model is None:
+                cls._instance = None
+                return None
         return cls._instance
 
     def _load_model(self):
@@ -152,6 +159,10 @@ class WhisperSTT:
         try:
             import whisper
             import torch
+            
+            # [FFMPEG-FIX] Tu dong inject ffmpeg vao PATH truoc khi nap model Whisper.
+            # Giai quyet [WinError 2] khi terminal cu chua reload PATH sau khi cai ffmpeg.
+            self._ensure_ffmpeg_in_path()
             
             logger.info(f"[WhisperSTT] Dang nap model '{self.model_name}' vao RAM (Pre-load)...")
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -161,6 +172,59 @@ class WhisperSTT:
             logger.error(f"[WhisperSTT] Chua cai thu vien whisper: {e}. Chay: pip install openai-whisper torch")
         except Exception as e:
             logger.error(f"[WhisperSTT] Loi nap model: {e}")
+
+    @staticmethod
+    def _ensure_ffmpeg_in_path():
+        """
+        Kiem tra ffmpeg co trong PATH chua. Neu khong, tu tim trong cac vi tri pho bien
+        (WinGet packages, scoop, chocolatey) va them vao os.environ['PATH'] cua process nay.
+        Chi can thuc hien 1 lan, anh huong toi toan bo process (bao gom cac subprocess Whisper).
+        """
+        import shutil
+        if shutil.which("ffmpeg"):
+            return  # ffmpeg da co trong PATH, khong can lam gi
+        
+        # Cac vi tri pho bien de tim ffmpeg tren Windows
+        candidates = []
+        
+        # 1) Bien moi truong FFMPEG_PATH (nguoi dung co the tu dat)
+        env_path = os.environ.get("FFMPEG_PATH", "")
+        if env_path:
+            candidates.append(env_path)
+        
+        # 2) WinGet packages (Gyan.FFmpeg)
+        local_app = os.environ.get("LOCALAPPDATA", "")
+        if local_app:
+            winget_base = os.path.join(local_app, "Microsoft", "WinGet", "Packages")
+            if os.path.isdir(winget_base):
+                for entry in os.listdir(winget_base):
+                    if "FFmpeg" in entry or "ffmpeg" in entry:
+                        pkg_dir = os.path.join(winget_base, entry)
+                        # Tim thu muc bin/
+                        for root, dirs, files in os.walk(pkg_dir):
+                            if "ffmpeg.exe" in files:
+                                candidates.append(root)
+                                break
+        
+        # 3) Scoop
+        scoop_dir = os.path.join(os.path.expanduser("~"), "scoop", "shims")
+        if os.path.isdir(scoop_dir):
+            candidates.append(scoop_dir)
+        
+        # 4) Chocolatey
+        choco_bin = r"C:\ProgramData\chocolatey\bin"
+        if os.path.isdir(choco_bin):
+            candidates.append(choco_bin)
+        
+        for candidate in candidates:
+            ffmpeg_exe = os.path.join(candidate, "ffmpeg.exe")
+            if os.path.isfile(ffmpeg_exe):
+                os.environ["PATH"] = candidate + os.pathsep + os.environ.get("PATH", "")
+                logger.info(f"[WhisperSTT] Da inject ffmpeg vao PATH: {candidate}")
+                return
+        
+        logger.warning("[WhisperSTT] Khong tim thay ffmpeg. Whisper co the bi loi [WinError 2].")
+        logger.warning("[WhisperSTT] Cai ffmpeg: winget install Gyan.FFmpeg -> restart terminal.")
 
     def transcribe(self, audio_path: str) -> str:
         """

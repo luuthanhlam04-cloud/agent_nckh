@@ -605,6 +605,7 @@ class SpotlightWindow(QWidget):
             from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
             self._tts_player = QMediaPlayer(self)
             self._tts_audio = QAudioOutput(self)
+            self._tts_audio.setVolume(1.0)
             self._tts_player.setAudioOutput(self._tts_audio)
             self._tts_player.mediaStatusChanged.connect(self._on_tts_status_changed)
             self._current_tts_file = ""
@@ -661,12 +662,22 @@ class SpotlightWindow(QWidget):
         """Xoa file rac ngay khi AI doc xong."""
         from PyQt6.QtMultimedia import QMediaPlayer
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            self._cleanup_tts_file()
+            # [B11-FIX] Delay 150ms de dam bao QMediaPlayer giai phong file handle
+            # truoc khi xoa, tranh [WinError 32] tren Windows
+            QTimer.singleShot(150, self._cleanup_tts_file)
 
     # ── Dieu khien hien thi cua so ───────────────────────────────────────────
 
     def toggle_visibility(self):
         """Bat/tat cua so. Duoc goi tu GlobalHotkeyThread qua signal."""
+        # [B26-FIX] Debounce 200ms: tranh double-toggle khi nhan hotkey 2 lan lien tiep
+        if hasattr(self, '_last_toggle_time'):
+            import time
+            if time.time() - self._last_toggle_time < 0.2:
+                return
+        import time
+        self._last_toggle_time = time.time()
+        
         if self.isVisible():
             self.hide()
         else:
@@ -691,7 +702,7 @@ class SpotlightWindow(QWidget):
         QTimer.singleShot(60, self.input_box.setFocus)
         logger.info("[SpotlightWindow] Da hien cua so.")
         
-        # Phat cau chao Asynchronous (Text Mode)
+        # [B12-FIX] Chi phat loi chao neu player chua dang phat (tranh chong tieng)
         self._play_greeting(for_voice=False)
         
     def _setup_greeting_player(self):
@@ -714,11 +725,25 @@ class SpotlightWindow(QWidget):
     def _play_greeting(self, for_voice=False):
         """Phat loi chao. Neu for_voice=True, se doi status_changed de bat micro."""
         if hasattr(self, '_greeting_player') and self._greeting_player:
-            self._greeting_player.stop()
+            from PyQt6.QtMultimedia import QMediaPlayer
+            # [B3/B6-FIX] Set flag TRUOC khi stop/play, tranh race condition:
+            # neu player dang Stopped, play() co the phat EndOfMedia ngay truoc khi
+            # flag duoc set -> mic khong bao gio bat
             self._waiting_for_greeting = for_voice
-            self._greeting_player.play()
+            
+            playback = self._greeting_player.playbackState()
+            if playback == QMediaPlayer.PlaybackState.PlayingState:
+                if for_voice:
+                    # Dang phat roi -> bat micro luon, khong can doi
+                    self._waiting_for_greeting = False
+                    self._start_recording_now()
+            else:
+                # Chua phat hoac da dung -> phat moi
+                self._greeting_player.stop()
+                self._greeting_player.play()
         elif for_voice:
             # Khong co player thi thu am luon
+            self._waiting_for_greeting = False
             self._start_recording_now()
 
     def _on_input_text_changed(self):
@@ -739,12 +764,22 @@ class SpotlightWindow(QWidget):
         """Bat micro khi am thanh loi chao ket thuc (chi ap dung Voice Mode)."""
         from PyQt6.QtMultimedia import QMediaPlayer
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            if getattr(self, '_is_recording', False) and getattr(self, '_waiting_for_greeting', False):
+            # [B3/B6-FIX] Chi kiem tra _waiting_for_greeting, khong kiem tra _is_recording
+            # vi _is_recording co the da bi thay doi boi toggle_voice_recording()
+            if getattr(self, '_waiting_for_greeting', False):
                 self._start_recording_now()
 
     def _start_recording_now(self):
         """Bat micro chinh thuc."""
         self._waiting_for_greeting = False
+        # Guard: neu voice_recorder chua san sang (pyaudio chua cai)
+        if not self._voice_recorder:
+            logger.warning("[SpotlightWindow] VoiceRecorder chua san sang, khong the ghi am.")
+            self._is_recording = False
+            self.input_box.setEnabled(True)
+            self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
+            self._show_result("Lỗi: Chức năng ghi âm chưa sẵn sàng (thiếu pyaudio).")
+            return
         self.input_box.setPlaceholderText("  Xin chào! Tôi đang nghe... (Bấm Ctrl+Shift+Space lần nữa để gửi)")
         self._voice_recorder.start_recording()
         
@@ -792,11 +827,20 @@ class SpotlightWindow(QWidget):
         self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
         self.input_box.setFocus()
         
-        if text.startswith("Lỗi:"):
+        # [BUG-FIX] Kiem tra tat ca dinh dang loi tu VoiceEngine:
+        # - "Lỗi: ..." (lỗi thu am)
+        # - "Lỗi giải mã giọng nói: ..." (Whisper decode fail / WinError 2)
+        if text.lower().startswith("lỗi") or text.lower().startswith("loi"):
             self._show_result(text)
         elif text:
-            self.input_box.setText(text)
-            self._on_submit()  # Gui ngay vao luong chat
+            # [B15-FIX] Strip whitespace va ky tu dac biet, kiem tra do dai toi thieu
+            # Whisper doi khi tra ve chi dau cham hoac khoang trang
+            cleaned_text = text.strip().strip('.,!?;:-')
+            if len(cleaned_text) > 2:
+                self.input_box.setText(cleaned_text)
+                self._on_submit()  # Gui ngay vao luong chat
+            else:
+                self._show_result("Không nghe rõ bạn nói gì. Vui lòng thử lại.")
         else:
             self._show_result("Không nghe rõ bạn nói gì. Vui lòng thử lại.")
             
@@ -845,7 +889,7 @@ class SpotlightWindow(QWidget):
         if hasattr(self, '_voice_recorder') and self._voice_recorder:
             try:
                 self._voice_recorder.cleanup()
-            except:
+            except Exception:
                 pass
         logger.info("[SpotlightWindow] Da don sach worker threads va pyaudio.")
 
@@ -872,7 +916,7 @@ def setup_system_tray(app: QApplication, window: SpotlightWindow) -> QSystemTray
     icon = QIcon(pixmap)
 
     tray = QSystemTrayIcon(icon, app)
-    tray.setToolTip("Digital Scholar - Last Agent V3.0\nCtrl+Space de mo/dong")
+    tray.setToolTip("Digital Scholar - Agent V4.0\nCtrl+Space de mo/dong")
 
     # Menu chuot phai
     menu = QMenu()
@@ -895,11 +939,12 @@ def setup_system_tray(app: QApplication, window: SpotlightWindow) -> QSystemTray
     tray.setContextMenu(menu)
 
     # Double-click vao tray icon -> toggle
-    def _on_activated(reason: QSystemTrayIcon.ActivationReason):
+    def _on_activated(reason):
         try:
+            from PyQt6.QtWidgets import QSystemTrayIcon
             if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
                 window.toggle_visibility()
-        except:
+        except Exception:
             pass
 
     tray.activated.connect(_on_activated)
