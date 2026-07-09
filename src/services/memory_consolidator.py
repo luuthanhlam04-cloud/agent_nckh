@@ -229,11 +229,16 @@ class MemoryConsolidator:
             try:
                 with open(self._profile_path, "r", encoding="utf-8") as f:
                     existing = f.read()
-                # Chi giu phan lich su (bo phan header cu)
+                # [B17-FIX] Chi giu phan lich su (bo phan header cu)
+                # Them try/except phong truong hop Profile.md bi hong cau truc
+                # de khong xoa sach lich su nguoi dung
                 if "---\n\n" in existing:
-                    existing = existing.split("---\n\n", 1)[1]
-            except Exception:
-                pass
+                    parts = existing.split("---\n\n", 1)
+                    existing = parts[1] if len(parts) > 1 else existing
+                # Neu khong co separator -> giu nguyen toan bo noi dung cu
+            except Exception as ex:
+                logger.warning("[MemoryConsolidator] Khong doc duoc Profile.md hien tai: %s", ex)
+                existing = ""
 
         # Chuoi noi dung: header moi + noi dung moi + phan separator + lich su cu
         today_section = f"## Ngay {date.today().isoformat()}\n{content}\n\n"

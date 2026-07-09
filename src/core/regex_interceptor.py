@@ -20,6 +20,7 @@ Kiến trúc Hybrid V5 (Chống False Positive tuyệt đối):
 import os
 import re
 import subprocess
+import webbrowser
 import logging
 import urllib.parse
 from datetime import datetime
@@ -58,11 +59,11 @@ def filter_whisper_hallucination(audio_text: str) -> Optional[str]:
 
 _TIME_PATTERN = re.compile(
     r"^(?:quản gia|hãy|cho tôi biết|xem)?\s*(?:bây giờ là|bây giờ)?\s*(?:mấy giờ|giờ hiện tại)(?:\s+rồi)?[\s\.\?!]*$",
-    re.IGNORECASE,
+    re.IGNORECASE | re.UNICODE,
 )
 _DATE_PATTERN = re.compile(
     r"^(?:quản gia|hãy|cho tôi biết|xem)?\s*(?:hôm nay|ngày hiện tại)\s*(?:là ngày bao nhiêu|ngày mấy|ngày bao nhiêu|là ngày mấy)[\s\.\?!]*$",
-    re.IGNORECASE,
+    re.IGNORECASE | re.UNICODE,
 )
 
 def check_time_queries(user_input: str) -> Optional[str]:
@@ -110,15 +111,16 @@ def check_smart_web_search(user_input: str) -> Optional[str]:
     
     if platform == "youtube":
         url = f"https://www.youtube.com/results?search_query={encoded_query}"
-        subprocess.Popen(f'start chrome "{url}"', shell=True)
+        # [B7-FIX] Dung webbrowser.open thay vi 'start chrome' -> hoat dong voi moi trinh duyet
+        webbrowser.open(url)
         logger.info("[Interceptor] Smart Search YouTube: %s", query)
-        return f"Đã tìm kiếm trên Youtube: {query}"
+        return f"Da tim kiem tren Youtube: {query}"
         
     elif platform in ["google", "gg"]:
         url = f"https://www.google.com/search?q={encoded_query}"
-        subprocess.Popen(f'start chrome "{url}"', shell=True)
+        webbrowser.open(url)
         logger.info("[Interceptor] Smart Search Google: %s", query)
-        return f"Đã tìm kiếm trên Google: {query}"
+        return f"Da tim kiem tren Google: {query}"
 
     return None
 
@@ -159,11 +161,15 @@ def check_os_commands(user_input: str) -> Optional[str]:
             break
 
     if command:
-        subprocess.Popen(command, shell=True)
-        logger.info("[Interceptor] OS Command: %s → %s", app_keyword, command)
-        return f"Đã mở {match.group(1).strip()} cho bạn."
-
-    return None
+        # [B8-FIX] Wrap trong try/except: neu app chua cai, Windows tra loi am
+        # nhung subprocess khong raise exception. Log ro rang giup debug.
+        try:
+            result = subprocess.Popen(command, shell=True)
+            logger.info("[Interceptor] OS Command: %s -> %s (PID: %s)", app_keyword, command, result.pid)
+        except Exception as e:
+            logger.error("[Interceptor] Khong the chay lenh OS '%s': %s", command, e)
+            return f"Loi mo '{match.group(1).strip()}': {str(e)[:60]}"
+        return f"Da mo {match.group(1).strip()} cho ban."
 
 
 # ══════════════════════════════════════════════════════════════════════════════

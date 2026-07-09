@@ -91,6 +91,12 @@ class InboxEventHandler(FileSystemEventHandler):
             return
 
         self._debounce_dict[path_str] = current_time
+        # [B4-FIX] Don dep debounce_dict khi qua 100 entries de tranh memory leak
+        # khi nhieu file duoc drop vao inbox qua nhieu ngay. Xoa cac entry cu nhat.
+        if len(self._debounce_dict) > 100:
+            oldest_keys = sorted(self._debounce_dict, key=lambda k: self._debounce_dict[k])[:50]
+            for k in oldest_keys:
+                del self._debounce_dict[k]
         logger.info(f"[Watchdog] 📥 Phát hiện tài liệu mới (Debounced): {file_path.name}")
 
         # Thread-safe: đưa đường dẫn vào asyncio Queue từ OS thread
