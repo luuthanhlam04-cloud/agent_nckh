@@ -5,6 +5,8 @@ pyaudio
 edge-tts
 pyperclip
 win11toast
+openai-whisper
+torch
 
 # ─── Tầng AI, LLM & Router ───────────────────────────────────────────────────
 google-genai
@@ -15,11 +17,8 @@ pydantic
 qdrant-client
 neo4j
 
-# ─── Tầng Nhúng Model & NPU ──────────────────────────────────────────────────
+# ─── Tầng Nhúng Model ────────────────────────────────────────────────────────
 sentence-transformers
-openvino
-openvino-telemetry
-optimum[openvino]
 
 # ─── Tầng Tiêu hóa Tài liệu & Xuất báo cáo ─────────────────────────────────
 PyMuPDF
@@ -30,8 +29,6 @@ Pillow
 # ─── Tầng Tự động hóa ngầm ───────────────────────────────────────────────────
 watchdog
 APScheduler
-playwright
-langgraph
 duckduckgo-search
 
 # ─── Tiện ích & Cấu hình ─────────────────────────────────────────────────────

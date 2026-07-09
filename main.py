@@ -253,7 +253,7 @@ def create_shutdown_handler(components: dict):
 
 def main():
     logger.info("=" * 60)
-    logger.info("  Digital Scholar - Last Agent V3.0")
+    logger.info("  Digital Scholar - Agent V4.0")
     logger.info("  Giai doan 4: Spotlight UI + Zero-Cost Interceptor")
     logger.info("=" * 60)
 
@@ -266,37 +266,42 @@ def main():
 
     # -- Buoc 2: Khoi dong InboxWatcher --
     logger.info("[Main] [2/4] Dang khoi dong InboxWatcher...")
-    try:
-        watcher = init_watcher(rag)
-        components["watcher"] = watcher
-    except Exception as e:
-        logger.error(f"[Main] Loi khoi dong Watcher: {e}")
+    # [B9-FIX] Chi khoi dong watcher neu rag khong phai None
+    if rag is not None:
+        try:
+            watcher = init_watcher(rag)
+            components["watcher"] = watcher
+        except Exception as e:
+            logger.error(f"[Main] Loi khoi dong Watcher: {e}")
+    else:
+        logger.warning("[Main] Bo qua InboxWatcher vi Database khong san sang.")
 
     # -- Buoc 3: Khoi tao Core AI --
     logger.info("[Main] [3/4] Dang khoi tao Core AI...")
     router = memory = orchestrator = None
-    try:
-        router, memory, orchestrator = init_core_ai(rag)
-        components["router"]       = router
-        components["memory"]       = memory
-        components["orchestrator"] = orchestrator
-        
-        # Khoi tao MemoryConsolidator
-        from src.services.memory_consolidator import MemoryConsolidator
-        gemini_api_key = os.getenv("GEMINI_API_KEY", "")
-        consolidator = MemoryConsolidator(
-            memory=memory, 
-            vault_path=VAULT_PATH, 
-            gemini_api_key=gemini_api_key
-        )
-        components["consolidator"] = consolidator
-        
-        # Check catchup va khoi dong scheduler (0:00 midnight)
-        consolidator.check_and_catchup()
-        consolidator.start_scheduler()
-        
-    except Exception as e:
-        logger.error(f"[Main] Loi khoi tao Core AI / Consolidator: {e}")
+    # [B9-FIX] Chi khoi tao Core AI neu rag khong phai None
+    if rag is not None:
+        try:
+            router, memory, orchestrator = init_core_ai(rag)
+            components["router"]       = router
+            components["memory"]       = memory
+            components["orchestrator"] = orchestrator
+            
+            # Khoi tao MemoryConsolidator
+            from src.services.memory_consolidator import MemoryConsolidator
+            gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+            consolidator = MemoryConsolidator(
+                memory=memory, 
+                vault_path=VAULT_PATH, 
+                gemini_api_key=gemini_api_key
+            )
+            components["consolidator"] = consolidator
+            consolidator.start_scheduler()
+            
+        except Exception as e:
+            logger.error(f"[Main] Loi khoi tao Core AI / Consolidator: {e}")
+    else:
+        logger.warning("[Main] Bo qua Core AI vi Database khong san sang.")
 
     # Dang ky SIGTERM handler
     signal.signal(signal.SIGTERM, create_shutdown_handler(components))
@@ -317,7 +322,7 @@ def main():
         app.setApplicationName("Digital Scholar")
 
         # Dong goi process_fn de Spotlight goi khong can biet tham so
-        if router and memory and orchestrator:
+        if router is not None and memory is not None and orchestrator is not None:
             process_fn = functools.partial(
                 process_user_input,
                 router=router,
@@ -362,6 +367,13 @@ def main():
         logger.info("  Phim tat: Ctrl+Shift+Space de bat/tat thu am (Voice Mode).")
         logger.info("  Click phai System Tray -> Thoat de dung han.")
         logger.info("=" * 60)
+
+        # [B24-FIX] check_and_catchup() goi Gemini API dong bo -> lam cham boot
+        # -> Dua vao QTimer.singleShot(2000) de chay sau khi UI da san sang
+        consolidator = components.get("consolidator")
+        if consolidator:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(2000, lambda: consolidator.check_and_catchup())
 
         # Chay Qt Event Loop (thay the while True: time.sleep(1) cua Giai doan 3)
         exit_code = app.exec()
