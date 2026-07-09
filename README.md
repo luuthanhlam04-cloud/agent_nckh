@@ -22,6 +22,7 @@ Nhằm đảm bảo hiệu năng tối ưu cho luồng xử lý Agent nền và 
 * **Môi trường thực thi:** Python 3.11.9.
 * **Bộ nhớ RAM:** Khuyến nghị thiết bị có tối thiểu 8GB RAM (Cần khoảng trống khả dụng từ 5.7 - 7.7 GB để vận hành trơn tru).
 * **Phần mềm bên thứ ba:** Obsidian (để quản lý Vault Memory), Trình duyệt Google Chrome/Edge.
+* **Công cụ bổ trợ (Bắt buộc cho STT Whisper):** Cần cài đặt `ffmpeg` (Gõ lệnh `winget install Gyan.FFmpeg` vào Terminal và khởi động lại Terminal).
 
 # **PHẦN 2: KIẾN TRÚC HỆ THỐNG TỔNG THỂ (SYSTEM ARCHITECTURE)**
 
@@ -52,7 +53,7 @@ Hệ thống tuân thủ thiết kế module hóa phân rã theo 5 tầng chức
 
 * **Bộ định tuyến ý định (Semantic Router):** Sử dụng Gemini 2.5 Flash API (thông qua SDK `google-genai`) để nhận diện và định dạng ý định người dùng thành JSON.  
 * **Động cơ suy luận chính (Worker):** Sử dụng thư viện `openai` trỏ đến OpenRouter API. Cấu hình gọi các mô hình thương mại (như `google/gemini-2.5-pro` hoặc `anthropic/claude-3.5-sonnet`) để xử lý văn bản quy mô lớn từ GraphRAG.   
-* **Đồ thị hóa tác vụ (LangGraph State Machine):** Quản lý luồng xử lý ReAct đa bước. Tích hợp cơ chế tự đánh giá (Self-Critique); tự động gọi DuckDuckGo API bổ sung ngữ cảnh web nếu thông tin nội bộ không đạt ngưỡng đánh giá.  
+* **Máy trạng thái ReAct (ReAct State Machine):** Quản lý luồng xử lý đa bước tương thích kiến trúc LangGraph nhưng hoạt động độc lập không phụ thuộc thư viện (Zero-dependency). Tích hợp cơ chế tự đánh giá (Self-Critique); tự động gọi DuckDuckGo API bổ sung ngữ cảnh web nếu thông tin nội bộ không đạt ngưỡng đánh giá.
 * **Động cơ nhận diện giọng nói (STT Engine):** Triển khai Whisper-tiny biên dịch qua OpenVINO để chạy trực tiếp trên NPU, giảm tải xử lý cho CPU.  
 * **Bộ phân tách tài liệu học thuật (Parsing & Chunking):** Kết hợp Marker và PyMuPDF chuyển đổi PDF sang Markdown. Gemini Vision API đọc nội dung slide PPTX, tích hợp cơ chế hoãn nhịp (time.sleep) để chống Rate Limit. Áp dụng chiến lược chia đoạn (Chunking) theo ranh giới ngữ nghĩa đoạn văn.
 
@@ -127,7 +128,7 @@ Hệ thống được cấu trúc dựa trên vòng đời của 8 tính năng l
 
 | Thuộc tính | Đặc tả chi tiết luồng vận hành |
 | :---- | :---- |
-| **Bối cảnh vận hành** | Đánh giá dữ liệu nội bộ được thu thập (LLM-as-a-judge) tích hợp cùng bộ máy LangGraph. |
+| **Bối cảnh vận hành** | Đánh giá dữ liệu nội bộ được thu thập (LLM-as-a-judge) tích hợp cùng Máy trạng thái ReAct (ReAct State Machine). |
 | **Trạng thái Dữ liệu** | Input: Ngữ cảnh từ RAG -> Output: Điểm đánh giá dạng JSON -> Quyết định tổng hợp nội dung hay tra cứu mở rộng. |
 
 *Luồng xử lý:* Phân tích đánh giá ngữ cảnh thu thập với câu hỏi gốc. Nếu điểm tin cậy đạt yêu cầu, tiến hành trả lời; nếu nội dung thiếu hụt, kích hoạt API tra cứu thông tin trên môi trường Web để bổ sung trước khi sinh kết quả cuối cùng.

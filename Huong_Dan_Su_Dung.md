@@ -8,6 +8,7 @@ Tài liệu này hướng dẫn cách khởi chạy, kiểm thử các tính nă
 
 | STT | Cửa sổ / Nơi thao tác | Hành động bạn cần làm | Lệnh gõ (Terminal) | Kết quả kỳ vọng |
 | :---: | :--- | :--- | :--- | :--- |
+| **0** | Terminal (VSCode) | Cài đặt ffmpeg (chỉ làm 1 lần trên máy mới) | `winget install Gyan.FFmpeg` | Cài đặt phần mềm hỗ trợ xử lý âm thanh (Whisper). **Lưu ý:** Cài xong phải tắt mở lại VSCode/Terminal. |
 | **1** | Terminal (VSCode) | Bật môi trường ảo | `venv\Scripts\activate` | Hiện chữ `(venv)` ở đầu dòng lệnh. |
 | **2** | Terminal (VSCode) | Chạy dự án ở chế độ ngầm | `python main.py` | Hiện log khởi tạo. Xuất hiện icon AI nhỏ ở khay hệ thống (System Tray) góc phải dưới màn hình. |
 
