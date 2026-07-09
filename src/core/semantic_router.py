@@ -38,7 +38,7 @@ logger = logging.getLogger("SemanticRouter")
 # ─── Config ───────────────────────────────────────────────────────────────────
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-ROUTER_MODEL = "gemini-2.5-flash"          # Model nhanh, rẻ, dùng làm cổng lọc
+ROUTER_MODEL = "gemini-2.0-flash"          # Model nhanh, re, dung lam cong loc
 SLIDING_WINDOW_SIZE = 5                    # N=5 cặp Q&A gần nhất giữ trên RAM
 MAX_CORRECTION_RETRIES = 3                 # Giới hạn vòng sửa JSON lỗi
 

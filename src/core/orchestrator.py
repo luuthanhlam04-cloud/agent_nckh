@@ -49,7 +49,7 @@ load_dotenv()
 GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
-CRITIQUE_MODEL    = "gemini-2.5-flash"              # Model nhe, re cho self-critique
+CRITIQUE_MODEL    = "gemini-2.0-flash"              # Model nhe, re cho self-critique
 WORKER_MODEL      = "google/gemini-2.5-pro"          # Model manh qua OpenRouter
 OPENROUTER_BASE   = "https://openrouter.ai/api/v1"
 MAX_SEARCH_ITER   = 3                                # Gioi han vong lap DuckDuckGo
