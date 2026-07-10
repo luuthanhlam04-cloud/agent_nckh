@@ -557,8 +557,17 @@ class SpotlightWindow(QWidget):
     # ── Ham tien ich ─────────────────────────────────────────────────────────
 
     def _is_busy(self) -> bool:
-        """[OPT-3] Kiem tra xem co Worker Thread nao dang chay khong."""
-        return bool(self._ai_worker and self._ai_worker.isRunning())
+        """[OPT-3] Kiem tra xem co Worker Thread nao dang chay khong.
+        Bao gom ca VoiceWorker de tranh double-submit trong luc Whisper dang giai ma.
+        """
+        ai_busy = bool(self._ai_worker and self._ai_worker.isRunning())
+        voice_busy = False
+        if self._voice_worker is not None:
+            try:
+                voice_busy = self._voice_worker.isRunning()
+            except RuntimeError:
+                self._voice_worker = None
+        return ai_busy or voice_busy
 
     def _show_result(self, text: str):
         """Hien ket qua trong o QTextEdit + mo rong cua so neu chua."""
@@ -633,17 +642,29 @@ class SpotlightWindow(QWidget):
         if not text or text == "REPEAT_LAST_VOICE":
             return
 
-        if self._tts_worker and self._tts_worker.isRunning():
-            self._tts_worker.terminate()
-            self._tts_worker.wait(300)
+        # [CRASH-FIX] deleteLater() xoa C++ object nhung Python ref van ton tai
+        # -> isRunning() tren object da xoa se throw RuntimeError -> app sap
+        # Fix: luon wrap bang try/except va reset ve None truoc khi tao moi
+        if self._tts_worker is not None:
+            try:
+                if self._tts_worker.isRunning():
+                    self._tts_worker.terminate()
+                    self._tts_worker.wait(300)
+            except RuntimeError:
+                pass  # C++ object da bi xoa boi deleteLater, bo qua
+            self._tts_worker = None
 
         self._cleanup_tts_file()
 
         tts_text = text[:TTS_MAX_CHARS]
         self._tts_worker = TTSWorker(tts_text, parent=self)
         self._tts_worker.finished.connect(self._on_tts_downloaded)
+        # [CRASH-FIX] Clear Python reference TRUOC khi deleteLater co the chay
+        # Dam bao lan goi _start_tts tiep theo khong gap RuntimeError
+        self._tts_worker.finished.connect(lambda: setattr(self, '_tts_worker', None))
         self._tts_worker.finished.connect(self._tts_worker.deleteLater)
         self._tts_worker.start()
+
 
     def _on_tts_downloaded(self, path: str):
         """Khi TTSWorker bao ve da tai xong MP3, tien hanh phat."""
@@ -804,6 +825,8 @@ class SpotlightWindow(QWidget):
                 
                 self._voice_worker = VoiceWorker(audio_path=audio_path, parent=self)
                 self._voice_worker.finished.connect(self._on_voice_finished)
+                # [CRASH-FIX] Same pattern as TTSWorker: clear Python ref truoc deleteLater
+                self._voice_worker.finished.connect(lambda: setattr(self, '_voice_worker', None))
                 self._voice_worker.finished.connect(self._voice_worker.deleteLater)
                 self._voice_worker.start()
             else:
@@ -811,6 +834,11 @@ class SpotlightWindow(QWidget):
                 self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
                 self._show_result("Lỗi: Không nhận được dữ liệu âm thanh.")
         else:
+            # [GUARD] Neu AI dang xu ly cau truoc, thong bao va huy
+            if self._is_busy():
+                self.show_and_focus()
+                self._show_result("Trợ lý đang xử lý câu trước. Vui lòng chờ một chút!")
+                return
             # Bat dau luong phat loi chao (Jarvis Approach)
             self.show_and_focus()
             self._is_recording = True
@@ -826,10 +854,10 @@ class SpotlightWindow(QWidget):
         self.input_box.setEnabled(True)
         self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
         self.input_box.setFocus()
+        # [FIX] Dam bao reset trang thai recording sau moi ket qua
+        self._is_recording = False
         
-        # [BUG-FIX] Kiem tra tat ca dinh dang loi tu VoiceEngine:
-        # - "Lỗi: ..." (lỗi thu am)
-        # - "Lỗi giải mã giọng nói: ..." (Whisper decode fail / WinError 2)
+        # [BUG-FIX] Kiem tra tat ca dinh dang loi tu VoiceEngine
         if text.lower().startswith("lỗi") or text.lower().startswith("loi"):
             self._show_result(text)
         elif text:
@@ -843,8 +871,7 @@ class SpotlightWindow(QWidget):
                 self._show_result("Không nghe rõ bạn nói gì. Vui lòng thử lại.")
         else:
             self._show_result("Không nghe rõ bạn nói gì. Vui lòng thử lại.")
-            
-        self._voice_worker = None
+        # NOTE: _voice_worker se tu dong set ve None qua lambda signal o tren
 
     def keyPressEvent(self, event):
         """Escape de an cua so."""
