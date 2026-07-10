@@ -28,3 +28,8 @@ Obsidian_Vault/03_Agent_Memory/*
 !Obsidian_Vault/01_Inbox/.gitkeep
 !Obsidian_Vault/02_Knowledge/.gitkeep
 !Obsidian_Vault/03_Agent_Memory/.gitkeep
+
+# Temp and generated files
+.consolidation_state
+README.docx
+test.mp3
