@@ -58,17 +58,51 @@ def filter_whisper_hallucination(audio_text: str) -> Optional[str]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 _TIME_PATTERN = re.compile(
-    r"^(?:quản gia|hãy|cho tôi biết|xem)?\s*(?:bây giờ là|bây giờ)?\s*(?:mấy giờ|giờ hiện tại)(?:\s+rồi)?[\s\.\?!]*$",
+    r"^(?:quản gia|hãy|cho tôi biết|xem|cho biết)?\s*"
+    r"(?:"
+    r"bây giờ\s+(?:là\s+)?(?:mấy giờ|giờ mấy|bao nhiêu giờ|giờ nào)(?:\s+rồi)?"
+    r"|(?:mấy giờ|giờ mấy|bao nhiêu giờ|giờ là mấy|giờ hiện tại|mấy giờ rồi)(?:\s+rồi)?"
+    r"|hiện tại\s+(?:là\s+)?(?:mấy giờ|giờ mấy)"
+    r"|(?:giờ|thời gian)\s+(?:là\s+)?(?:mấy|bao nhiêu)"
+    r")"
+    r"[\s\.\?!]*$",
     re.IGNORECASE | re.UNICODE,
 )
 _DATE_PATTERN = re.compile(
-    r"^(?:quản gia|hãy|cho tôi biết|xem)?\s*(?:hôm nay|ngày hiện tại)\s*(?:là ngày bao nhiêu|ngày mấy|ngày bao nhiêu|là ngày mấy)[\s\.\?!]*$",
+    r"^(?:quản gia|hãy|cho tôi biết|xem|cho biết)?\s*"
+    r"(?:"
+    r"hôm nay\s+(?:là\s+)?(?:ngày bao nhiêu|ngày mấy|ngày nào|là ngày gì)"
+    r"|(?:ngày|hôm nay)\s+(?:là\s+)?(?:mấy|bao nhiêu|ngày nào)"
+    r"|ngày hiện tại(?:\s+là\s+(?:ngày bao nhiêu|mấy))?"
+    r"|ngày mấy\s+rồi|hôm nay ngày mấy"
+    r")"
+    r"[\s\.\?!]*$",
     re.IGNORECASE | re.UNICODE,
 )
+_DAY_PATTERN = re.compile(
+    r"^(?:quản gia|hãy|cho tôi biết|xem|cho biết)?\s*"
+    r"(?:hôm nay\s+)?(?:thứ mấy|thứ mấy rồi|ngày thứ mấy|thứ mấy hôm nay)"
+    r"[\s\.\?!]*$",
+    re.IGNORECASE | re.UNICODE,
+)
+_DATETIME_PATTERN = re.compile(
+    r"^(?:quản gia|hãy|cho tôi biết|xem)?\s*"
+    r"(?:bây giờ là mấy giờ|hiện tại mấy giờ|bây giờ ngày mấy|hôm nay thứ mấy ngày mấy)"
+    r"[\s\.\?!]*$",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_WEEKDAYS_VI = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
 
 def check_time_queries(user_input: str) -> Optional[str]:
     text = user_input.strip()
     now = datetime.now()
+    weekday = _WEEKDAYS_VI[now.weekday()]
+
+    if _DATETIME_PATTERN.match(text):
+        result = f"Bây giờ là {now.strftime('%H:%M')} phút, {weekday}, ngày {now.strftime('%d/%m/%Y')}."
+        logger.info("[Interceptor] Datetime query → %s", result)
+        return result
 
     if _TIME_PATTERN.match(text):
         result = f"Bây giờ là {now.strftime('%H:%M')} phút."
@@ -76,8 +110,13 @@ def check_time_queries(user_input: str) -> Optional[str]:
         return result
 
     if _DATE_PATTERN.match(text):
-        result = f"Hôm nay là ngày {now.strftime('%d/%m/%Y')}."
+        result = f"Hôm nay là {weekday}, ngày {now.strftime('%d/%m/%Y')}."
         logger.info("[Interceptor] Date query → %s", result)
+        return result
+
+    if _DAY_PATTERN.match(text):
+        result = f"Hôm nay là {weekday}, ngày {now.strftime('%d/%m/%Y')}."
+        logger.info("[Interceptor] Day-of-week query → %s", result)
         return result
 
     return None
