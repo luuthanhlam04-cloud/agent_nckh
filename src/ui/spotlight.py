@@ -490,6 +490,8 @@ class SpotlightWindow(QWidget):
             elif isinstance(result, str) and result:
                 self._show_result(result)
                 self._last_response = result
+                # [FIX-BUG3] Phat TTS cho ket qua local (gio, ngay, ...) - truoc day chi hien text
+                self._start_tts(result)
 
     def _start_ai_mode(self, text: str):
         """Che do AI: mo rong cua so + khoi dong AIWorker trong Worker Thread."""

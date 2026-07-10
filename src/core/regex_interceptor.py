@@ -57,6 +57,10 @@ def filter_whisper_hallucination(audio_text: str) -> Optional[str]:
 #  MODULE 2: Tra cứu thời gian và ngày tháng tĩnh (Khóa 2 đầu)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Duoi cau tieng Viet ma Whisper thuong them vao cuoi cau (vay, nhi, nhe, a, the...)
+# Vi du: "Bay gio la may gio vay nhi?" -> cho phep nhieu tu cuoi lien tiep
+_VI_SUFFIX = r"(?:\s+(?:vậy|nhỉ|nhé|ạ|thế|đây|hả|ha|thôi|đi|không|đó|đấy|bạn|em|ạnh|chị|ơi))*[\s\.,\?!]*$"
+
 _TIME_PATTERN = re.compile(
     r"^(?:quản gia|hãy|cho tôi biết|xem|cho biết)?\s*"
     r"(?:"
@@ -64,8 +68,7 @@ _TIME_PATTERN = re.compile(
     r"|(?:mấy giờ|giờ mấy|bao nhiêu giờ|giờ là mấy|giờ hiện tại|mấy giờ rồi)(?:\s+rồi)?"
     r"|hiện tại\s+(?:là\s+)?(?:mấy giờ|giờ mấy)"
     r"|(?:giờ|thời gian)\s+(?:là\s+)?(?:mấy|bao nhiêu)"
-    r")"
-    r"[\s\.\?!]*$",
+    r")" + _VI_SUFFIX,
     re.IGNORECASE | re.UNICODE,
 )
 _DATE_PATTERN = re.compile(
@@ -75,20 +78,19 @@ _DATE_PATTERN = re.compile(
     r"|(?:ngày|hôm nay)\s+(?:là\s+)?(?:mấy|bao nhiêu|ngày nào)"
     r"|ngày hiện tại(?:\s+là\s+(?:ngày bao nhiêu|mấy))?"
     r"|ngày mấy\s+rồi|hôm nay ngày mấy"
-    r")"
-    r"[\s\.\?!]*$",
+    r")" + _VI_SUFFIX,
     re.IGNORECASE | re.UNICODE,
 )
 _DAY_PATTERN = re.compile(
     r"^(?:quản gia|hãy|cho tôi biết|xem|cho biết)?\s*"
     r"(?:hôm nay\s+)?(?:thứ mấy|thứ mấy rồi|ngày thứ mấy|thứ mấy hôm nay)"
-    r"[\s\.\?!]*$",
+    + _VI_SUFFIX,
     re.IGNORECASE | re.UNICODE,
 )
 _DATETIME_PATTERN = re.compile(
     r"^(?:quản gia|hãy|cho tôi biết|xem)?\s*"
     r"(?:bây giờ là mấy giờ|hiện tại mấy giờ|bây giờ ngày mấy|hôm nay thứ mấy ngày mấy)"
-    r"[\s\.\?!]*$",
+    + _VI_SUFFIX,
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -98,6 +100,9 @@ def check_time_queries(user_input: str) -> Optional[str]:
     text = user_input.strip()
     now = datetime.now()
     weekday = _WEEKDAYS_VI[now.weekday()]
+
+    # [DEBUG] Log chinh xac van ban nhan duoc (giup debug Whisper output)
+    logger.debug("[Interceptor] check_time_queries nhan: %r", text)
 
     if _DATETIME_PATTERN.match(text):
         result = f"Bây giờ là {now.strftime('%H:%M')} phút, {weekday}, ngày {now.strftime('%d/%m/%Y')}."
