@@ -56,6 +56,13 @@ import tempfile
 import threading
 from typing import Optional, Any, Callable
 
+try:
+    import edge_tts as _edge_tts_mod   # Module-level import: tranh per-call overhead
+    _EDGE_TTS_AVAILABLE = True
+except ImportError:
+    _EDGE_TTS_AVAILABLE = False
+    logging.getLogger("SpotlightUI").warning("[SpotlightUI] edge-tts chua cai. TTS bi tat.")
+
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLineEdit,
     QTextEdit, QLabel, QSystemTrayIcon, QMenu,
@@ -127,42 +134,32 @@ class AIWorker(QThread):
 
 class TTSWorker(QThread):
     """
-    Phat giong noi trong Worker Thread rieng.
-
-    Chien luoc phat am:
-    Worker thuc hien gui lenh Text-to-Speech xuong edge-tts.
-    [REFACTOR Giai doan 5] Chi thuc hien tai file MP3 ve may roi bao lai cho Main Thread.
-    Khong dung vao UI hay phat truc tiep bang wmplayer.
+    Tai file MP3 tu Azure (edge-tts) trong Worker Thread.
+    Main Thread nhan duong dan qua signal finished, roi phat bang QMediaPlayer.
     """
-    finished = pyqtSignal(str)   # Phat duong dan file tam ve Main Thread
+    finished = pyqtSignal(str)   # Duong dan MP3 hoac "" neu loi
 
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
         self._text = text
 
     def run(self):
-        tmp_path = ""
-        try:
-            import edge_tts
-            import asyncio
-            import tempfile
+        if not _EDGE_TTS_AVAILABLE:
+            logger.warning("[TTSWorker] edge-tts chua cai. Bo qua TTS.")
+            self.finished.emit("")
+            return
 
-            async def _download_audio():
-                """Tai MP3 tu Azure va tra ve duong dan file tam."""
-                communicate = edge_tts.Communicate(self._text, voice=TTS_VOICE)
-                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-                    path = tmp.name
+        try:
+            async def _download():
+                communicate = _edge_tts_mod.Communicate(self._text, voice=TTS_VOICE)
+                fd, path = tempfile.mkstemp(suffix=".mp3")
+                os.close(fd)
                 await communicate.save(path)
                 return path
 
-            # Tai file am thanh (async, trong Worker Thread)
-            tmp_path = asyncio.run(_download_audio())
-            logger.info("[TTSWorker] Da tai MP3 thanh cong: %s", tmp_path)
-            self.finished.emit(tmp_path)
-
-        except ImportError:
-            logger.warning("[TTSWorker] edge-tts chua cai. Bo qua TTS.")
-            self.finished.emit("")
+            path = asyncio.run(_download())
+            logger.info("[TTSWorker] MP3 tai xong: %s", path)
+            self.finished.emit(path)
         except Exception as e:
             logger.error("[TTSWorker] Loi tai TTS: %s", e)
             self.finished.emit("")
@@ -312,6 +309,23 @@ class SpotlightWindow(QWidget):
         self._setup_animation()
         self._setup_greeting_player()
         self._setup_tts_player()
+
+        # Preload WhisperSTT trong daemon thread de khoi dong UI khong bi giat
+        def _preload_whisper():
+            try:
+                import time
+                t0 = time.perf_counter()
+                from src.ui.voice_engine import WhisperSTT
+                stt = WhisperSTT(model_name="tiny")
+                elapsed = time.perf_counter() - t0
+                if stt is not None:
+                    logger.info("[SpotlightWindow] Whisper preload hoan thanh trong %.1fs.", elapsed)
+                else:
+                    logger.error("[SpotlightWindow] Whisper preload THAT BAI - kiem tra ffmpeg/RAM.")
+            except Exception as e:
+                logger.error("[SpotlightWindow] Whisper preload exception: %s", e)
+
+        threading.Thread(target=_preload_whisper, daemon=True, name="WhisperPreload").start()
 
     # ── Khoi tao ─────────────────────────────────────────────────────────────
 
@@ -532,11 +546,11 @@ class SpotlightWindow(QWidget):
         )
         self._ai_worker.finished.connect(self._on_ai_finished)
         self._ai_worker.error.connect(self._on_ai_error)
-        # [CRASH-FIX] Same pattern as TTSWorker: clear Python ref TRUOC deleteLater
-        # dam bao _is_busy() lan sau khong goi isRunning() tren object da bi xoa
+        # [CRASH-FIX] Clear Python ref TRUOC deleteLater (ca 2 duong finished va error)
         self._ai_worker.finished.connect(lambda: setattr(self, '_ai_worker', None))
         self._ai_worker.finished.connect(self._ai_worker.deleteLater)
         self._ai_worker.error.connect(lambda: setattr(self, '_ai_worker', None))
+        self._ai_worker.error.connect(self._ai_worker.deleteLater)  # [FIX] Tranh memory leak khi co loi
         self._ai_worker.start()
         logger.info("[SpotlightWindow] AIWorker started: '%s'", text[:50])
 
@@ -560,11 +574,11 @@ class SpotlightWindow(QWidget):
     def _on_ai_error(self, error_msg: str):
         """Nhan loi tu AIWorker. Chay trong Main Thread."""
         self.status_label.hide()
-        self._show_result(f"Loi: {error_msg}")
+        self._show_result(f"Lỗi: {error_msg}")
         self.input_box.setEnabled(True)
-        self.input_box.setPlaceholderText("  Hoi Digital Scholar...")
+        self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
         self.input_box.setFocus()
-        self._ai_worker = None
+        # NOTE: _ai_worker tu dong set ve None qua lambda signal (error.connect)
 
     # ── Ham tien ich ─────────────────────────────────────────────────────────
 
@@ -858,6 +872,12 @@ class SpotlightWindow(QWidget):
                 self.show_and_focus()
                 self._show_result("Trợ lý đang xử lý câu trước. Vui lòng chờ một chút!")
                 return
+            # [GUARD] Neu loi chao dang phat (waiting_for_greeting=True), ignore duplicate press
+            # Tranh bug: bam Ctrl+Shift+Space lien tiep 2 lan trong luc greeting phat
+            # gay ra _is_recording=True nhung micro chua bat -> state bi loan
+            if getattr(self, '_waiting_for_greeting', False):
+                logger.warning("[SpotlightWindow] Greeting dang phat, ignore duplicate voice hotkey.")
+                return
             # Bat dau luong phat loi chao (Jarvis Approach)
             self.show_and_focus()
             self._is_recording = True
@@ -920,18 +940,25 @@ class SpotlightWindow(QWidget):
 
     def cleanup(self):
         """
-        [OPT-2] Don dep tat ca Worker Thread va Media Player khi app thoat.
+        Don dep tat ca Worker Thread va Media Player khi app thoat.
         Goi tu main.py truoc app.quit() hoac trong finalizer.
         """
         self._cleanup_tts_file()
         if hasattr(self, '_greeting_player') and self._greeting_player:
             self._greeting_player.stop()
-            
+
         for worker in (self._ai_worker, self._tts_worker, self._voice_worker):
-            if worker and worker.isRunning():
-                worker.terminate()
-                worker.wait(500)
-                
+            if worker is None:
+                continue
+            # [FIX] Wrap trong try/except: worker co the da bi deleteLater truoc khi
+            # cleanup() duoc goi -> RuntimeError khi goi isRunning() -> cleanup bi cat
+            try:
+                if worker.isRunning():
+                    worker.terminate()
+                    worker.wait(500)
+            except RuntimeError:
+                pass  # C++ object da bi xoa, bo qua
+
         if hasattr(self, '_voice_recorder') and self._voice_recorder:
             try:
                 self._voice_recorder.cleanup()
