@@ -19,10 +19,13 @@ Kiến trúc Hybrid V5 (Chống False Positive tuyệt đối):
 
 import os
 import re
+import json
 import subprocess
 import webbrowser
 import logging
+import threading
 import urllib.parse
+import urllib.request
 from datetime import datetime
 from typing import Optional, Tuple, Any
 
@@ -132,7 +135,9 @@ def check_time_queries(user_input: str) -> Optional[str]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 _SMART_SEARCH_PATTERN = re.compile(
-    r"^(?:hãy|quản gia|mày|nhờ bạn|giúp tôi)?\s*(?:mở|tìm|kiếm|tìm kiếm|search|bật|tra)\s+(.+?)(?:\s+(?:trên|ở|trong)\s+(youtube|google|gg))?\s*$",
+    r"^(?:hãy|quản gia|mày|nhờ bạn|giúp tôi|cho tôi)?\s*"
+    r"(?:mở|tìm|kiếm|tìm kiếm|search|bật|tra|phát|nghe|play|cho nghe)\s+"
+    r"(.+?)(?:\s+(?:trên|ở|trong)\s+(youtube|google|gg))?\s*$",
     re.IGNORECASE,
 )
 
@@ -154,24 +159,86 @@ def check_smart_web_search(user_input: str) -> Optional[str]:
     encoded_query = urllib.parse.quote(query)
     
     if platform == "youtube":
-        url = f"https://www.youtube.com/results?search_query={encoded_query}"
-        # [B7-FIX] Dung webbrowser.open thay vi 'start chrome' -> hoat dong voi moi trinh duyet
-        webbrowser.open(url)
-        logger.info("[Interceptor] Smart Search YouTube: %s", query)
-        return f"Da tim kiem tren Youtube: {query}"
+        # [NEW] Tự động phát video đầu tiên thay vì mở trang search
+        # Chạy trong daemon thread để không block UI
+        _play_youtube_async(query)
+        logger.info("[Interceptor] YouTube auto-play triggered: %s", query)
+        return f"Đang tìm và phát: {query} 🎵"
         
     elif platform in ["google", "gg"]:
-        url = f"https://www.google.com/search?q={encoded_query}"
+        url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
         webbrowser.open(url)
         logger.info("[Interceptor] Smart Search Google: %s", query)
-        return f"Da tim kiem tren Google: {query}"
+        return f"Đã tìm kiếm trên Google: {query}"
 
     return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  HELPER: Tự động lấy video đầu tiên từ YouTube Search (không cần yt-dlp)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_youtube_first_video_url(query: str) -> Optional[str]:
+    """
+    Gọi YouTube search, parse ytInitialData (JSON nhúng trong HTML) để lấy
+    videoId của kết quả đầu tiên. Chỉ dùng stdlib (urllib), không cần requests.
+    Trả về URL đầy đủ hoặc None nếu thất bại.
+    """
+    try:
+        encoded = urllib.parse.quote(query)
+        url = f"https://www.youtube.com/results?search_query={encoded}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+
+        # ytInitialData được nhúng thẳng vào HTML dạng: var ytInitialData = {...};
+        m = re.search(r'var ytInitialData = (\{.+?\});</script>', html, re.DOTALL)
+        if not m:
+            logger.warning("[Interceptor] Không tìm thấy ytInitialData trong trang YouTube.")
+            return None
+
+        data = json.loads(m.group(1))
+        contents = (
+            data["contents"]["twoColumnSearchResultsRenderer"]
+                ["primaryContents"]["sectionListRenderer"]
+                ["contents"][0]["itemSectionRenderer"]["contents"]
+        )
+        for item in contents:
+            if "videoRenderer" in item:
+                video_id = item["videoRenderer"]["videoId"]
+                return f"https://www.youtube.com/watch?v={video_id}"
+    except Exception as e:
+        logger.warning("[Interceptor] Lỗi lấy video YouTube đầu tiên: %s", e)
+    return None
+
+
+def _play_youtube_async(query: str):
+    """
+    Khởi động daemon thread để tìm và phát video YouTube đầu tiên.
+    Không block UI thread - kết quả xuất hiện sau ~1-2s trong trình duyệt.
+    Fallback: nếu không lấy được video URL, mở trang tìm kiếm.
+    """
+    def _worker():
+        video_url = _get_youtube_first_video_url(query)
+        if video_url:
+            logger.info("[Interceptor] YouTube auto-play: %s", video_url)
+            webbrowser.open(video_url)
+        else:
+            encoded = urllib.parse.quote(query)
+            fallback = f"https://www.youtube.com/results?search_query={encoded}"
+            logger.info("[Interceptor] YouTube fallback search: %s", fallback)
+            webbrowser.open(fallback)
+
+    threading.Thread(target=_worker, daemon=True, name="YouTubeAutoPlay").start()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  MODULE 3: Điều khiển HĐH và khởi chạy phần mềm (Action-Verb Anchored)
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 _OS_PATTERN = re.compile(
     r"^(?:hãy|quản gia|mày|làm ơn)?\s*(?:mở|bật|khởi động|vào|chạy)\s+"
