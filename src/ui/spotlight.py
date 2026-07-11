@@ -157,7 +157,12 @@ class TTSWorker(QThread):
                 await communicate.save(path)
                 return path
 
-            path = asyncio.run(_download())
+            # [FIX-BUG4] Tranh xung dot event loop voi Qt
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            path = loop.run_until_complete(_download())
+            loop.close()
+
             logger.info("[TTSWorker] MP3 tai xong: %s", path)
             self.finished.emit(path)
         except Exception as e:
@@ -296,10 +301,9 @@ class SpotlightWindow(QWidget):
         self._is_recording = False
         self._waiting_for_greeting = False
         try:
-            from src.ui.voice_engine import VoiceRecorder, WhisperSTT
+            from src.ui.voice_engine import VoiceRecorder
             self._voice_recorder = VoiceRecorder()
-            # Preload WhisperSTT in background to avoid freezing UI
-            threading.Thread(target=lambda: WhisperSTT(model_name="tiny"), daemon=True).start()
+            # [FIX-BUG1] Da xoa lambda preload Whisper o day, giu lai preload co log o duoi
         except ImportError:
             self._voice_recorder = None
             logger.warning("[SpotlightWindow] Khong the nap VoiceRecorder (thieu file hoac pyaudio).")
@@ -672,7 +676,11 @@ class SpotlightWindow(QWidget):
 
     def _start_tts(self, text: str):
         """Khoi dong TTSWorker de tai file, huy file cu neu co."""
+        # [FIX-BUG8] Khong phat TTS neu la cau thong bao loi he thong
         if not text or text == "REPEAT_LAST_VOICE":
+            return
+        if text.lower().startswith("lỗi") or text.lower().startswith("loi"):
+            logger.warning("[SpotlightWindow] Bo qua TTS cho thong bao loi.")
             return
 
         # [CRASH-FIX] deleteLater() xoa C++ object nhung Python ref van ton tai
@@ -724,12 +732,11 @@ class SpotlightWindow(QWidget):
 
     def toggle_visibility(self):
         """Bat/tat cua so. Duoc goi tu GlobalHotkeyThread qua signal."""
+        import time
         # [B26-FIX] Debounce 200ms: tranh double-toggle khi nhan hotkey 2 lan lien tiep
         if hasattr(self, '_last_toggle_time'):
-            import time
             if time.time() - self._last_toggle_time < 0.2:
                 return
-        import time
         self._last_toggle_time = time.time()
         
         if self.isVisible():
@@ -867,24 +874,29 @@ class SpotlightWindow(QWidget):
                 self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
                 self._show_result("Lỗi: Không nhận được dữ liệu âm thanh.")
         else:
-            # [GUARD] Neu AI dang xu ly cau truoc, thong bao va huy
+            # [GUARD] Neu AI dang xu ly cau truoc hoac dang noi, thong bao va huy
             if self._is_busy():
                 self.show_and_focus()
-                self._show_result("Trợ lý đang xử lý câu trước. Vui lòng chờ một chút!")
+                self._show_result("Trợ lý đang xử lý hoặc đang nói. Vui lòng chờ!")
                 return
             # [GUARD] Neu loi chao dang phat (waiting_for_greeting=True), ignore duplicate press
-            # Tranh bug: bam Ctrl+Shift+Space lien tiep 2 lan trong luc greeting phat
-            # gay ra _is_recording=True nhung micro chua bat -> state bi loan
             if getattr(self, '_waiting_for_greeting', False):
                 logger.warning("[SpotlightWindow] Greeting dang phat, ignore duplicate voice hotkey.")
                 return
-            # Bat dau luong phat loi chao (Jarvis Approach)
-            self.show_and_focus()
+                
+            # [FIX-BUG6] Tat loi chao hien tai truoc khi ghi am moi (de an toan)
+            if hasattr(self, '_greeting_player') and self._greeting_player:
+                from PyQt6.QtMultimedia import QMediaPlayer
+                if self._greeting_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                    self._greeting_player.stop()
+
+            # [FIX-BUG2] Set state _is_recording = True SAU khi qua het cac guards
             self._is_recording = True
             self.input_box.setEnabled(False)
             self.input_box.setPlaceholderText("  Đang gọi trợ lý... (Vui lòng chờ tiếng Bíp)")
             
-            # Phat loi chao Synchronous (Voice Mode)
+            # Bat dau luong phat loi chao (Jarvis Approach)
+            self.show_and_focus()
             self._play_greeting(for_voice=True)
 
     def _on_voice_finished(self, text: str):
@@ -905,6 +917,9 @@ class SpotlightWindow(QWidget):
             cleaned_text = text.strip().strip('.,!?;:-')
             if len(cleaned_text) > 2:
                 self.input_box.setText(cleaned_text)
+                # [FIX-BUG3] Tat moi am thanh hien tai de _is_busy() khong false-positive 
+                # va chan cau lenh tiep theo bi submit
+                self._on_input_text_changed()
                 self._on_submit()  # Gui ngay vao luong chat
             else:
                 self._show_result("Không nghe rõ bạn nói gì. Vui lòng thử lại.")
@@ -958,6 +973,16 @@ class SpotlightWindow(QWidget):
                     worker.wait(500)
             except RuntimeError:
                 pass  # C++ object da bi xoa, bo qua
+
+        # [FIX-BUG7] Don dep file WAV temp cua VoiceWorker bi terminate de chong leak
+        if self._voice_worker and hasattr(self._voice_worker, '_audio_path'):
+            path = self._voice_worker._audio_path
+            if path and os.path.exists(path):
+                try: 
+                    os.remove(path)
+                    logger.debug("[SpotlightWindow] Da xoa WAV temp tu VoiceWorker bi huy.")
+                except: 
+                    pass
 
         if hasattr(self, '_voice_recorder') and self._voice_recorder:
             try:
