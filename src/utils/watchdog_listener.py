@@ -314,9 +314,18 @@ class InboxWatcher:
                 )
 
             # Bước 4: Di chuyển file gốc sang 02_Knowledge/ (đánh dấu đã xử lý)
+            # [FIX] Xử lý FileExistsError khi cùng file được drop 2 lần:
+            # thêm timestamp vào tên để không ghi đè file cũ
             dest_path = os.path.join(self.knowledge_path, path.name)
+            if os.path.exists(dest_path):
+                from datetime import datetime as _dt
+                stem, ext = os.path.splitext(path.name)
+                ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+                dest_path = os.path.join(self.knowledge_path, f"{stem}_{ts}{ext}")
+                logger.warning("[Watchdog] File trùng tên, đổi thành: %s", os.path.basename(dest_path))
             shutil.move(file_path, dest_path)
             logger.info(f"[Watchdog] 📦 Đã lưu file gốc vào: {dest_path}")
+
 
         except Exception as e:
             logger.error(f"[Watchdog] ❌ Lỗi xử lý file '{path.name}': {e}", exc_info=True)

@@ -36,26 +36,26 @@ _STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__fil
                             ".consolidation_state")
 
 _REDUCE_SYSTEM_PROMPT = """
-Ban la bo loc tri nho thong minh cua mot AI tro ly nghien cuu khoa hoc.
+Bạn là bộ lọc trí nhớ thông minh của một AI trợ lý nghiên cứu khoa học.
 
-Nhiem vu: Phan tich doan lich su hoi thoai cua ngay hom nay va tao ban tom tat ngon gon.
+Nhiệm vụ: Phân tích đoạn lịch sử hội thoại của ngày hôm nay và tạo bản tóm tắt ngắn gọn.
 
-Quy tac loc:
-- XOA BO: cac su kien thuong nhat (mo app, bat nhac, kiem tra gio, lenh he dieu hanh, cac cau hoi don gian)
-- GIU LAI: kien thuc khoa hoc duoc thao luan, khai niem quan trong, van de nghien cuu, phat hien moi
-- CUONG DO: giu lai nhung chu de/tu khoa duoc nhat den nhieu lan (the hien su quan tam sau)
+Quy tắc lọc:
+- XÓA BỎ: các sự kiện thường nhật (mở app, bật nhạc, kiểm tra giờ, lệnh hệ điều hành, câu hỏi đơn giản)
+- GIỮ LẠI: kiến thức khoa học được thảo luận, khái niệm quan trọng, vấn đề nghiên cứu, phát hiện mới
+- CƯỜNG ĐỘ: giữ lại những chủ đề/từ khóa được nhắc đến nhiều lần (thể hiện sự quan tâm sâu)
 
-Dinh dang dau ra (Markdown, tieng Viet):
-## Tri Thuc Noi Bat Trong Ngay
-[Tom tat ngan gon nhung gi da hoc]
+Định dạng đầu ra (Markdown, tiếng Việt):
+## Tri Thức Nổi Bật Trong Ngày
+[Tóm tắt ngắn gọn những gì đã học]
 
-## Cac Chu De Duoc Thao Luan Nhieu
-[Danh sach bullet cac chu de chinh]
+## Các Chủ Đề Được Thảo Luận Nhiều
+[Danh sách bullet các chủ đề chính]
 
-## Ghi Chu Nghien Cuu
-[Bat ky phat hien hoac van de con do ngu dang can theo doi]
+## Ghi Chú Nghiên Cứu
+[Bất kỳ phát hiện hoặc vấn đề còn đang cần theo dõi]
 
-Neu khong co noi dung hoc thuat nao dang ghi lai, chi viet: "Khong co noi dung hoc thuat trong ngay."
+Nếu không có nội dung học thuật nào đáng ghi lại, chỉ viết: "Không có nội dung học thuật trong ngày."
 """.strip()
 
 
@@ -196,7 +196,7 @@ class MemoryConsolidator:
             )
 
             response = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-3.1-flash-lite",   # [FIX] gemini-2.0-flash da bi khai tu (404)
                 contents=user_prompt,
                 config=genai_types.GenerateContentConfig(
                     system_instruction=_REDUCE_SYSTEM_PROMPT,

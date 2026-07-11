@@ -187,14 +187,21 @@ class VoiceWorker(QThread):
         try:
             from src.ui.voice_engine import WhisperSTT
             stt = WhisperSTT(model_name="tiny")
+            # [CRASH-FIX] WhisperSTT() tra ve None neu model load that bai (singleton reset)
+            # Neu khong guard -> stt.transcribe() raise AttributeError -> app crash
+            if stt is None:
+                logger.error("[VoiceWorker] Model Whisper khong the khoi dong. Kiem tra log.")
+                self.finished.emit("Lỗi: Không thể nạp model Whisper. Kiểm tra RAM/ffmpeg.")
+                return
             text = stt.transcribe(self._audio_path)
-            self.finished.emit(text)
+            self.finished.emit(text if text else "Lỗi: Whisper trả về kết quả trống.")
         except ImportError:
             logger.error("[VoiceWorker] Thieu thu vien src.ui.voice_engine")
             self.finished.emit("Lỗi: Không tìm thấy engine STT.")
         except Exception as e:
             logger.error("[VoiceWorker] Loi: %s", e)
-            self.finished.emit("")
+            # [FIX] Emit loi thuc te thay vi "" de user biet dieu gi xay ra
+            self.finished.emit(f"Lỗi giải mã: {str(e)[:80]}")
 
 
 # ==============================================================================
@@ -525,7 +532,11 @@ class SpotlightWindow(QWidget):
         )
         self._ai_worker.finished.connect(self._on_ai_finished)
         self._ai_worker.error.connect(self._on_ai_error)
-        self._ai_worker.finished.connect(self._ai_worker.deleteLater)  # Don bo nho
+        # [CRASH-FIX] Same pattern as TTSWorker: clear Python ref TRUOC deleteLater
+        # dam bao _is_busy() lan sau khong goi isRunning() tren object da bi xoa
+        self._ai_worker.finished.connect(lambda: setattr(self, '_ai_worker', None))
+        self._ai_worker.finished.connect(self._ai_worker.deleteLater)
+        self._ai_worker.error.connect(lambda: setattr(self, '_ai_worker', None))
         self._ai_worker.start()
         logger.info("[SpotlightWindow] AIWorker started: '%s'", text[:50])
 
@@ -539,13 +550,12 @@ class SpotlightWindow(QWidget):
 
         # Mo lai o nhap
         self.input_box.setEnabled(True)
-        self.input_box.setPlaceholderText("  Hoi tiep Digital Scholar...")
+        self.input_box.setPlaceholderText("  Hỏi tiếp Digital Scholar...")
         self.input_box.setFocus()
 
         # Phat TTS (neu edge-tts da cai)
         self._start_tts(answer)
-
-        self._ai_worker = None
+        # NOTE: _ai_worker se tu dong set ve None qua lambda signal o tren
 
     def _on_ai_error(self, error_msg: str):
         """Nhan loi tu AIWorker. Chay trong Main Thread."""
@@ -562,7 +572,14 @@ class SpotlightWindow(QWidget):
         """[OPT-3] Kiem tra xem co Worker Thread nao dang chay khong.
         Bao gom ca VoiceWorker de tranh double-submit trong luc Whisper dang giai ma.
         """
-        ai_busy = bool(self._ai_worker and self._ai_worker.isRunning())
+        # [CRASH-FIX] Wrap ca hai trong try/except RuntimeError:
+        # deleteLater() co the xoa C++ object truoc khi Python ref duoc clear
+        ai_busy = False
+        if self._ai_worker is not None:
+            try:
+                ai_busy = self._ai_worker.isRunning()
+            except RuntimeError:
+                self._ai_worker = None
         voice_busy = False
         if self._voice_worker is not None:
             try:
