@@ -71,7 +71,7 @@ class VoiceRecorder:
             )
             self._record_thread.start()
         except Exception as e:
-            logger.error("[VoiceRecorder] Loi mo microphone: %s", e)
+            logger.error("[VoiceRecorder] Loi mo microphone: %s", e, exc_info=True)
             self._is_recording = False
 
     def stop_recording(self) -> Optional[str]:
@@ -88,9 +88,9 @@ class VoiceRecorder:
                     self._stream.stop_stream()
                 self._stream.close()
             except OSError as e:
-                logger.warning("[VoiceRecorder] Stream da mat ket noi: %s", e)
+                logger.warning("[VoiceRecorder] Stream da mat ket noi: %s", e, exc_info=True)
             except Exception as e:
-                logger.error("[VoiceRecorder] Loi dong stream: %s", e)
+                logger.error("[VoiceRecorder] Loi dong stream: %s", e, exc_info=True)
             finally:
                 self._stream = None
 
@@ -109,7 +109,7 @@ class VoiceRecorder:
             try:
                 self._pyaudio.terminate()
             except Exception as e:
-                logger.error("[VoiceRecorder] Loi terminate pyaudio: %s", e)
+                logger.error("[VoiceRecorder] Loi terminate pyaudio: %s", e, exc_info=True)
             finally:
                 self._pyaudio = None
 
@@ -122,11 +122,11 @@ class VoiceRecorder:
                 data = self._stream.read(self.chunk, exception_on_overflow=False)
                 self._frames.append(data)
             except OSError as e:
-                logger.error("[VoiceRecorder] Microphone ngat ket noi: %s", e)
+                logger.error("[VoiceRecorder] Microphone ngat ket noi: %s", e, exc_info=True)
                 self._is_recording = False
                 break
             except Exception as e:
-                logger.error("[VoiceRecorder] Loi doc audio: %s", e)
+                logger.error("[VoiceRecorder] Loi doc audio: %s", e, exc_info=True)
                 break
 
     def _save_wav(self) -> Optional[str]:
@@ -145,7 +145,7 @@ class VoiceRecorder:
             logger.info("[VoiceRecorder] Da luu %d frames -> %s", len(self._frames), path)
             return path
         except Exception as e:
-            logger.error("[VoiceRecorder] Loi luu WAV: %s", e)
+            logger.error("[VoiceRecorder] Loi luu WAV: %s", e, exc_info=True)
             return None
 
 
@@ -198,9 +198,9 @@ class WhisperSTT:
             logger.info("[WhisperSTT] Model nap xong trong %.1fs. RAM san sang.", elapsed)
 
         except ImportError as e:
-            logger.error("[WhisperSTT] Thieu thu vien whisper/torch: %s. Chay: pip install openai-whisper torch", e)
+            logger.error("[WhisperSTT] Thieu thu vien whisper/torch: %s. Chay: pip install openai-whisper torch", e, exc_info=True)
         except Exception as e:
-            logger.error("[WhisperSTT] Loi nap model: %s", e)
+            logger.error("[WhisperSTT] Loi nap model: %s", e, exc_info=True)
 
     @staticmethod
     def _ensure_ffmpeg_in_path():
@@ -275,7 +275,7 @@ class WhisperSTT:
             logger.info("[WhisperSTT] Ket qua (%.1fs): '%s'", elapsed, text[:80])
 
         except Exception as e:
-            logger.error("[WhisperSTT] Loi giai ma: %s", e)
+            logger.error("[WhisperSTT] Loi giai ma: %s", e, exc_info=True)
             text = f"Lỗi giải mã giọng nói: {str(e)[:100]}"
         finally:
             # Don audio file ngay sau khi doc

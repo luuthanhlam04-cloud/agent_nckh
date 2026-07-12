@@ -96,7 +96,7 @@ class MemoryConsolidator:
                 with open(_STATE_FILE, "r", encoding="utf-8") as f:
                     return json.load(f)
         except Exception as e:
-            logger.warning("[MemoryConsolidator] Khong doc duoc state: %s", e)
+            logger.warning("[MemoryConsolidator] Khong doc duoc state: %s", e, exc_info=True)
         return {"last_consolidated_date": None}
 
     def _save_state(self, consolidated_date: date):
@@ -105,7 +105,7 @@ class MemoryConsolidator:
             with open(_STATE_FILE, "w", encoding="utf-8") as f:
                 json.dump({"last_consolidated_date": consolidated_date.isoformat()}, f)
         except Exception as e:
-            logger.error("[MemoryConsolidator] Khong luu duoc state: %s", e)
+            logger.error("[MemoryConsolidator] Khong luu duoc state: %s", e, exc_info=True)
 
     # ── Catch-up Logic (Risk 1 Fix) ──────────────────────────────────────────
 
@@ -209,7 +209,7 @@ class MemoryConsolidator:
             return summary
 
         except Exception as e:
-            logger.error("[MemoryConsolidator] Loi Gemini Flash: %s. Fallback raw log.", e)
+            logger.error("[MemoryConsolidator] Loi Gemini Flash: %s. Fallback raw log.", e, exc_info=True)
             return f"[Hoi tu that bai: {str(e)[:100]}]\n\n{raw_log}"
 
     def _write_profile(self, content: str, is_catchup: bool = False):
@@ -251,7 +251,7 @@ class MemoryConsolidator:
                 f.write(full_content)
             logger.info("[MemoryConsolidator] Da ghi Profile.md (%d bytes).", len(full_content))
         except Exception as e:
-            logger.error("[MemoryConsolidator] Khong ghi duoc Profile.md: %s", e)
+            logger.error("[MemoryConsolidator] Khong ghi duoc Profile.md: %s", e, exc_info=True)
 
     # ── Scheduler Lifecycle ──────────────────────────────────────────────────
 
@@ -295,7 +295,7 @@ class MemoryConsolidator:
                 "Cronjob bi tat. Chay: pip install apscheduler"
             )
         except Exception as e:
-            logger.error("[MemoryConsolidator] Loi khoi dong scheduler: %s", e)
+            logger.error("[MemoryConsolidator] Loi khoi dong scheduler: %s", e, exc_info=True)
 
     def stop_scheduler(self):
         """Dung scheduler khi app thoat."""
@@ -304,4 +304,4 @@ class MemoryConsolidator:
                 self._scheduler.shutdown(wait=False)
                 logger.info("[MemoryConsolidator] Scheduler da dung.")
             except Exception as e:
-                logger.error("[MemoryConsolidator] Loi dung scheduler: %s", e)
+                logger.error("[MemoryConsolidator] Loi dung scheduler: %s", e, exc_info=True)

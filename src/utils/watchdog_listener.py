@@ -240,7 +240,7 @@ class InboxWatcher:
                 logger.info("[Watchdog] Queue worker da bi huy, dung sach.")
                 break
             except Exception as e:
-                logger.error("[Watchdog] Loi trong process_queue: %s", e)
+                logger.error("[Watchdog] Loi trong process_queue: %s", e, exc_info=True)
 
     async def _handle_new_file(self, file_path: str):
         """
