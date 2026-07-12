@@ -16,7 +16,7 @@ Kien truc da luong (Phan 2.1 & Rui ro 1 - last agent.md):
                        Dung asyncio.run() tranh Event Loop Conflict voi PyQt6.
                        Fallback ve winsound (built-in) neu edge-tts chua cai.
 
-  GlobalHotkeyThread : Worker Thread - QThread
+  GlobalHotkeyWorker : Worker Thread - QThread
                        keyboard.wait() chay rieng, khong block Main Thread.
                        Phat toggle_signal khi Ctrl+Space duoc bam.
 
@@ -108,8 +108,8 @@ class AIWorker(QThread):
     Giao tiep voi Main Thread ONLY qua pyqtSignal.
     KHONG duoc dong vao bat ky widget Qt nao trong run().
     """
-    finished = pyqtSignal(str)   # Phat ket qua ve Main Thread
-    error    = pyqtSignal(str)   # Phat thong bao loi
+    sig_finished = pyqtSignal(str)   # Phat ket qua ve Main Thread
+    sig_error    = pyqtSignal(str)   # Phat thong bao loi
 
     def __init__(self, user_input: str, process_fn: Callable, parent=None):
         super().__init__(parent)
@@ -122,10 +122,10 @@ class AIWorker(QThread):
             logger.info("[AIWorker] Bat dau xu ly: '%s'", self._user_input[:60])
             answer = self._process_fn(self._user_input)
             logger.info("[AIWorker] Hoan thanh. Do dai: %d ky tu.", len(answer))
-            self.finished.emit(answer)
+            self.sig_finished.emit(answer)
         except Exception as e:
-            logger.error("[AIWorker] Loi: %s", e)
-            self.error.emit(f"He thong gap su co: {str(e)[:120]}")
+            logger.error("[AIWorker] Loi: %s", e, exc_info=True)
+            self.sig_error.emit(f"He thong gap su co: {str(e)[:120]}")
 
 
 # ==============================================================================
@@ -137,7 +137,7 @@ class TTSWorker(QThread):
     Tai file MP3 tu Azure (edge-tts) trong Worker Thread.
     Main Thread nhan duong dan qua signal finished, roi phat bang QMediaPlayer.
     """
-    finished = pyqtSignal(str)   # Duong dan MP3 hoac "" neu loi
+    sig_finished = pyqtSignal(str)   # Duong dan MP3 hoac "" neu loi
 
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
@@ -146,7 +146,7 @@ class TTSWorker(QThread):
     def run(self):
         if not _EDGE_TTS_AVAILABLE:
             logger.warning("[TTSWorker] edge-tts chua cai. Bo qua TTS.")
-            self.finished.emit("")
+            self.sig_finished.emit("")
             return
 
         try:
@@ -164,10 +164,10 @@ class TTSWorker(QThread):
             loop.close()
 
             logger.info("[TTSWorker] MP3 tai xong: %s", path)
-            self.finished.emit(path)
+            self.sig_finished.emit(path)
         except Exception as e:
-            logger.error("[TTSWorker] Loi tai TTS: %s", e)
-            self.finished.emit("")
+            logger.error("[TTSWorker] Loi tai TTS: %s", e, exc_info=True)
+            self.sig_finished.emit("")
 
 
 # ==============================================================================
@@ -179,7 +179,7 @@ class VoiceWorker(QThread):
     Worker thuc hien viec giai ma giong noi bang Whisper local (Lazy Load).
     Tranh block giao dien khi load model hoac khi dang chay inference (GPU/CPU).
     """
-    finished = pyqtSignal(str)   # Phat text giai ma ve Main Thread
+    sig_finished = pyqtSignal(str)   # Phat text giai ma ve Main Thread
 
     def __init__(self, audio_path: str, parent=None):
         super().__init__(parent)
@@ -193,24 +193,24 @@ class VoiceWorker(QThread):
             # Neu khong guard -> stt.transcribe() raise AttributeError -> app crash
             if stt is None:
                 logger.error("[VoiceWorker] Model Whisper khong the khoi dong. Kiem tra log.")
-                self.finished.emit("Lỗi: Không thể nạp model Whisper. Kiểm tra RAM/ffmpeg.")
+                self.sig_finished.emit("Lỗi: Không thể nạp model Whisper. Kiểm tra RAM/ffmpeg.")
                 return
             text = stt.transcribe(self._audio_path)
-            self.finished.emit(text if text else "Lỗi: Whisper trả về kết quả trống.")
+            self.sig_finished.emit(text if text else "Lỗi: Whisper trả về kết quả trống.")
         except ImportError:
             logger.error("[VoiceWorker] Thieu thu vien src.ui.voice_engine")
-            self.finished.emit("Lỗi: Không tìm thấy engine STT.")
+            self.sig_finished.emit("Lỗi: Không tìm thấy engine STT.")
         except Exception as e:
-            logger.error("[VoiceWorker] Loi: %s", e)
+            logger.error("[VoiceWorker] Loi: %s", e, exc_info=True)
             # [FIX] Emit loi thuc te thay vi "" de user biet dieu gi xay ra
-            self.finished.emit(f"Lỗi giải mã: {str(e)[:80]}")
+            self.sig_finished.emit(f"Lỗi giải mã: {str(e)[:80]}")
 
 
 # ==============================================================================
-#  GlobalHotkeyThread - Lang nghe phim tat toan cuc
+#  GlobalHotkeyWorker - Lang nghe phim tat toan cuc
 # ==============================================================================
 
-class GlobalHotkeyThread(QThread):
+class GlobalHotkeyWorker(QThread):
     """
     Lang nghe phim tat Ctrl+Space toan cuc trong Worker Thread rieng.
     keyboard.wait() la ham blocking -> PHAI chay trong thread rieng.
@@ -221,8 +221,8 @@ class GlobalHotkeyThread(QThread):
     [BUG-11 FIX] Them flag _running va phuong thuc stop() de dung sach.
     keyboard.unhook_all() giai phong hook truoc khi thread ket thuc.
     """
-    toggle_signal = pyqtSignal()   # Phat ve Main Thread khi hotkey duoc bam
-    voice_signal = pyqtSignal()    # Phat ve khi bam Ctrl+Shift+Space (Voice Mode)
+    sig_toggle = pyqtSignal()   # Phat ve Main Thread khi hotkey duoc bam
+    sig_voice = pyqtSignal()    # Phat ve khi bam Ctrl+Shift+Space (Voice Mode)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -246,11 +246,11 @@ class GlobalHotkeyThread(QThread):
 
             def _on_hotkey():
                 logger.info("[Hotkey] %s bam -> toggle_signal.", GLOBAL_HOTKEY)
-                self.toggle_signal.emit()
+                self.sig_toggle.emit()
                 
             def _on_voice_hotkey():
                 logger.info("[Hotkey] %s bam -> voice_signal.", VOICE_HOTKEY)
-                self.voice_signal.emit()
+                self.sig_voice.emit()
 
             keyboard.add_hotkey(GLOBAL_HOTKEY, _on_hotkey)
             keyboard.add_hotkey(VOICE_HOTKEY, _on_voice_hotkey)
@@ -260,7 +260,7 @@ class GlobalHotkeyThread(QThread):
         except ImportError:
             logger.warning("[Hotkey] Thu vien 'keyboard' chua cai. Hotkey bi tat.")
         except Exception as e:
-            logger.error("[Hotkey] Loi: %s. Hotkey bi tat.", e)
+            logger.error("[Hotkey] Loi: %s. Hotkey bi tat.", e, exc_info=True)
 
 
 # ==============================================================================
@@ -327,7 +327,7 @@ class SpotlightWindow(QWidget):
                 else:
                     logger.error("[SpotlightWindow] Whisper preload THAT BAI - kiem tra ffmpeg/RAM.")
             except Exception as e:
-                logger.error("[SpotlightWindow] Whisper preload exception: %s", e)
+                logger.error("[SpotlightWindow] Whisper preload exception: %s", e, exc_info=True)
 
         threading.Thread(target=_preload_whisper, daemon=True, name="WhisperPreload").start()
 
@@ -477,7 +477,7 @@ class SpotlightWindow(QWidget):
                     last_response=self._last_response,
                 )
             except Exception as e:
-                logger.error("[SpotlightWindow] Interceptor loi: %s", e)
+                logger.error("[SpotlightWindow] Interceptor loi: %s", e, exc_info=True)
                 result, mode = None, None
 
             if result is not None and mode is not None:
@@ -548,13 +548,13 @@ class SpotlightWindow(QWidget):
             process_fn=self._process_fn,
             parent=self,
         )
-        self._ai_worker.finished.connect(self._on_ai_finished)
-        self._ai_worker.error.connect(self._on_ai_error)
+        self._ai_worker.sig_finished.connect(self._on_ai_finished)
+        self._ai_worker.sig_error.connect(self._on_ai_error)
         # [CRASH-FIX] Clear Python ref TRUOC deleteLater (ca 2 duong finished va error)
-        self._ai_worker.finished.connect(lambda: setattr(self, '_ai_worker', None))
-        self._ai_worker.finished.connect(self._ai_worker.deleteLater)
-        self._ai_worker.error.connect(lambda: setattr(self, '_ai_worker', None))
-        self._ai_worker.error.connect(self._ai_worker.deleteLater)  # [FIX] Tranh memory leak khi co loi
+        self._ai_worker.sig_finished.connect(lambda: setattr(self, '_ai_worker', None))
+        self._ai_worker.sig_finished.connect(self._ai_worker.deleteLater)
+        self._ai_worker.sig_error.connect(lambda: setattr(self, '_ai_worker', None))
+        self._ai_worker.sig_error.connect(self._ai_worker.deleteLater)  # [FIX] Tranh memory leak khi co loi
         self._ai_worker.start()
         logger.info("[SpotlightWindow] AIWorker started: '%s'", text[:50])
 
@@ -643,7 +643,7 @@ class SpotlightWindow(QWidget):
         except ImportError:
             logger.warning("[SpotlightWindow] win11toast chua cai. Bo qua toast.")
         except Exception as e:
-            logger.error("[SpotlightWindow] Toast loi: %s", e)
+            logger.error("[SpotlightWindow] Toast loi: %s", e, exc_info=True)
 
     def _setup_tts_player(self):
         """Khoi tao QMediaPlayer de phat Audio TTS AI tra loi."""
@@ -657,7 +657,7 @@ class SpotlightWindow(QWidget):
             self._current_tts_file = ""
             logger.info("[SpotlightWindow] Da setup QMediaPlayer cho TTS.")
         except Exception as e:
-            logger.warning("[SpotlightWindow] Khong the nap QMediaPlayer TTS: %s", e)
+            logger.warning("[SpotlightWindow] Khong the nap QMediaPlayer TTS: %s", e, exc_info=True)
             self._tts_player = None
 
     def _cleanup_tts_file(self):
@@ -671,7 +671,7 @@ class SpotlightWindow(QWidget):
                 os.remove(self._current_tts_file)
                 logger.debug("[SpotlightWindow] Da xoa file TTS rác: %s", self._current_tts_file)
             except Exception as e:
-                logger.warning("[SpotlightWindow] Khong the xoa file TTS: %s", e)
+                logger.warning("[SpotlightWindow] Khong the xoa file TTS: %s", e, exc_info=True)
             self._current_tts_file = ""
 
     def _start_tts(self, text: str):
@@ -699,11 +699,11 @@ class SpotlightWindow(QWidget):
 
         tts_text = text[:TTS_MAX_CHARS]
         self._tts_worker = TTSWorker(tts_text, parent=self)
-        self._tts_worker.finished.connect(self._on_tts_downloaded)
+        self._tts_worker.sig_finished.connect(self._on_tts_downloaded)
         # [CRASH-FIX] Clear Python reference TRUOC khi deleteLater co the chay
         # Dam bao lan goi _start_tts tiep theo khong gap RuntimeError
-        self._tts_worker.finished.connect(lambda: setattr(self, '_tts_worker', None))
-        self._tts_worker.finished.connect(self._tts_worker.deleteLater)
+        self._tts_worker.sig_finished.connect(lambda: setattr(self, '_tts_worker', None))
+        self._tts_worker.sig_finished.connect(self._tts_worker.deleteLater)
         self._tts_worker.start()
 
 
@@ -731,7 +731,7 @@ class SpotlightWindow(QWidget):
     # ── Dieu khien hien thi cua so ───────────────────────────────────────────
 
     def toggle_visibility(self):
-        """Bat/tat cua so. Duoc goi tu GlobalHotkeyThread qua signal."""
+        """Bat/tat cua so. Duoc goi tu GlobalHotkeyWorker qua signal."""
         import time
         # [B26-FIX] Debounce 200ms: tranh double-toggle khi nhan hotkey 2 lan lien tiep
         if hasattr(self, '_last_toggle_time'):
@@ -780,7 +780,7 @@ class SpotlightWindow(QWidget):
             self._greeting_player.mediaStatusChanged.connect(self._on_greeting_status)
             logger.info("[SpotlightWindow] Da setup QMediaPlayer cho loi chao.")
         except Exception as e:
-            logger.warning("[SpotlightWindow] Khong the nap QMediaPlayer: %s", e)
+            logger.warning("[SpotlightWindow] Khong the nap QMediaPlayer: %s", e, exc_info=True)
             self._greeting_player = None
 
     def _play_greeting(self, for_voice=False):
@@ -864,10 +864,10 @@ class SpotlightWindow(QWidget):
                 self._expand_window()
                 
                 self._voice_worker = VoiceWorker(audio_path=audio_path, parent=self)
-                self._voice_worker.finished.connect(self._on_voice_finished)
+                self._voice_worker.sig_finished.connect(self._on_voice_finished)
                 # [CRASH-FIX] Same pattern as TTSWorker: clear Python ref truoc deleteLater
-                self._voice_worker.finished.connect(lambda: setattr(self, '_voice_worker', None))
-                self._voice_worker.finished.connect(self._voice_worker.deleteLater)
+                self._voice_worker.sig_finished.connect(lambda: setattr(self, '_voice_worker', None))
+                self._voice_worker.sig_finished.connect(self._voice_worker.deleteLater)
                 self._voice_worker.start()
             else:
                 self.input_box.setEnabled(True)

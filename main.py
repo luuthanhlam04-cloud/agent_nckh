@@ -312,7 +312,7 @@ def main():
 
     try:
         from PyQt6.QtWidgets import QApplication
-        from src.ui.spotlight import SpotlightWindow, GlobalHotkeyThread, setup_system_tray
+        from src.ui.spotlight import SpotlightWindow, GlobalHotkeyWorker, setup_system_tray
         from src.core.regex_interceptor import intercept as regex_intercept
 
         # Tao Qt Application
@@ -350,11 +350,11 @@ def main():
         tray = setup_system_tray(app, window)
         components["tray"] = tray
 
-        # Khoi dong Global Hotkey Thread (Ctrl+Space)
+        # Khoi dong Global Hotkey Worker (Ctrl+Space)
         # LUU Y: Can quyen Administrator tren Windows de hook toan cuc
-        hotkey_thread = GlobalHotkeyThread(parent=app)
-        hotkey_thread.toggle_signal.connect(window.toggle_visibility)
-        hotkey_thread.voice_signal.connect(window.toggle_voice_recording)
+        hotkey_thread = GlobalHotkeyWorker(parent=app)
+        hotkey_thread.sig_toggle.connect(window.toggle_visibility)
+        hotkey_thread.sig_voice.connect(window.toggle_voice_recording)
         hotkey_thread.start()
         components["hotkey_thread"] = hotkey_thread
 
@@ -386,8 +386,8 @@ def main():
         logger.info("  Core AI: " + ("SAN SANG" if orchestrator else "CHUA CO API KEY"))
         logger.info("  Nhan Ctrl+C de dung he thong.")
         try:
-            while True:
-                time.sleep(1)
+            import threading
+            threading.Event().wait()
         except KeyboardInterrupt:
             pass
 
