@@ -355,7 +355,7 @@ def trigger_docx_export(user_input: str) -> Optional[dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 _COPY_PATTERN = re.compile(
-    r"^(?:quản gia|hãy)?\s*(?:copy|sao chép)(?:\s+(?:câu|trả lời|lại|đó))?[\s\.\?!]*$", 
+    r"^(?:quản gia|hãy)?\s*(?:copy|sao chép)(?:\s+(?:câu|trả lời|lại|đó|câu vừa rồi|câu trả lời))?[\s\.\?!]*$", 
     re.IGNORECASE
 )
 _TOAST_PATTERN = re.compile(

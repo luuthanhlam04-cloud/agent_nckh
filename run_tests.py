@@ -289,8 +289,8 @@ try:
     check("BUG-4: setSource(QUrl()) exists to release file lock", "setSource(QUrl())" in tts_cleanup_source)
 
     # BUG-11: stop_listening method exists
-    check("BUG-11: GlobalHotkeyThread.stop_listening exists", hasattr(sp.GlobalHotkeyThread, "stop_listening"))
-    stop_src = inspect.getsource(sp.GlobalHotkeyThread.stop_listening)
+    check("BUG-11: GlobalHotkeyWorker.stop_listening exists", hasattr(sp.GlobalHotkeyWorker, "stop_listening"))
+    stop_src = inspect.getsource(sp.GlobalHotkeyWorker.stop_listening)
     check("BUG-11: unhook_all() called in stop_listening", "unhook_all()" in stop_src)
 
     # BUG-11: cleanup in main
