@@ -20,6 +20,7 @@ import os
 import uuid
 import logging
 import gc
+import torch
 from typing import Optional, List, Dict, Any
 
 from dotenv import load_dotenv
@@ -43,9 +44,9 @@ logger = logging.getLogger("HybridRAG")
 load_dotenv()
 
 # ─── Hằng số cấu hình ─────────────────────────────────────────────────────────
-EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"
 QDRANT_COLLECTION_NAME = "scholar_knowledge"
-QDRANT_VECTOR_SIZE = 384  # Kích thước vector của MiniLM-L12-v2
+QDRANT_VECTOR_SIZE = 768  # Kích thước vector của gte-multilingual-base
 QDRANT_PATH = os.path.join(os.path.dirname(__file__), "../../qdrant_storage")
 
 NEO4J_URI = os.getenv("NEO4J_URI", "")
@@ -87,7 +88,7 @@ class QdrantManager:
         return self._model
 
     def _ensure_collection(self):
-        """Tạo collection nếu chưa tồn tại."""
+        """Tạo collection nếu chưa tồn tại hoặc sai dimension."""
         client = self._client
         existing = [c.name for c in client.get_collections().collections]
         if QDRANT_COLLECTION_NAME not in existing:
@@ -100,11 +101,54 @@ class QdrantManager:
             )
             logger.info(f"[Qdrant] Đã tạo collection: '{QDRANT_COLLECTION_NAME}'")
         else:
-            logger.info(f"[Qdrant] Collection '{QDRANT_COLLECTION_NAME}' đã tồn tại.")
+            # [FIX] Logic tự động cấu trúc lại CSDL khi đổi embedding model
+            try:
+                col_info = client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+                current_size = col_info.config.params.vectors.size
+                if current_size != QDRANT_VECTOR_SIZE:
+                    logger.warning(f"[Qdrant] Collection dimension mismatch (Current: {current_size}, Expected: {QDRANT_VECTOR_SIZE}). Recreating...")
+                    
+                    # Cảnh báo: qdrant-client (local mode) có một bug rò rỉ bộ nhớ numpy khi delete và recreate collection với size khác nhau trong cùng 1 process.
+                    # Khắc phục: Đóng client, xóa trắng thư mục và khởi tạo lại.
+                    if self._client:
+                        self._client.close()
+                        self._client = None
+                    import shutil
+                    if os.path.exists(QDRANT_PATH):
+                        shutil.rmtree(QDRANT_PATH)
+                    os.makedirs(QDRANT_PATH, exist_ok=True)
+                    self._client = QdrantClient(path=QDRANT_PATH)
+                    client = self._client
+                    
+                    client.create_collection(
+                        collection_name=QDRANT_COLLECTION_NAME,
+                        vectors_config=VectorParams(
+                            size=QDRANT_VECTOR_SIZE,
+                            distance=Distance.COSINE,
+                        ),
+                    )
+                    logger.info(f"[Qdrant] Đã recreate collection: '{QDRANT_COLLECTION_NAME}' với size {QDRANT_VECTOR_SIZE}")
+                else:
+                    logger.info(f"[Qdrant] Collection '{QDRANT_COLLECTION_NAME}' đã tồn tại và đúng dimension ({current_size}).")
+            except Exception as e:
+                logger.warning(f"[Qdrant] Lỗi kiểm tra collection: {e}. Recreating...")
+                try:
+                    client.delete_collection(collection_name=QDRANT_COLLECTION_NAME)
+                except Exception:
+                    pass
+                client.create_collection(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    vectors_config=VectorParams(
+                        size=QDRANT_VECTOR_SIZE,
+                        distance=Distance.COSINE,
+                    ),
+                )
+                logger.info(f"[Qdrant] Đã recreate collection sau lỗi: '{QDRANT_COLLECTION_NAME}'")
 
     def embed_text(self, text: str) -> List[float]:
         """Chuyển đổi đoạn văn bản thành vector số học."""
-        return self._get_model().encode(text, normalize_embeddings=True).tolist()
+        # e5-base yêu cầu prefix 'query: ' cho tìm kiếm
+        return self._get_model().encode(f"query: {text}", normalize_embeddings=True).tolist()
 
     def upsert_chunks(self, chunks: List[Dict[str, Any]]) -> List[str]:
         """
@@ -126,7 +170,8 @@ class QdrantManager:
 
         for chunk in chunks:
             chunk_id = str(uuid.uuid4())
-            vector = model.encode(chunk["text"], normalize_embeddings=True).tolist()
+            # e5-base yêu cầu prefix 'passage: ' cho tài liệu lưu trữ
+            vector = model.encode(f"passage: {chunk['text']}", normalize_embeddings=True).tolist()
             payload = {
                 "text": chunk["text"],
                 "source": chunk.get("source", "unknown"),
