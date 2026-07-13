@@ -188,7 +188,7 @@ class VoiceWorker(QThread):
     def run(self):
         try:
             from src.ui.voice_engine import WhisperSTT
-            stt = WhisperSTT(model_name="tiny")
+            stt = WhisperSTT(model_name="small")
             # [CRASH-FIX] WhisperSTT() tra ve None neu model load that bai (singleton reset)
             # Neu khong guard -> stt.transcribe() raise AttributeError -> app crash
             if stt is None:
@@ -320,7 +320,7 @@ class SpotlightWindow(QWidget):
                 import time
                 t0 = time.perf_counter()
                 from src.ui.voice_engine import WhisperSTT
-                stt = WhisperSTT(model_name="tiny")
+                stt = WhisperSTT(model_name="small")
                 elapsed = time.perf_counter() - t0
                 if stt is not None:
                     logger.info("[SpotlightWindow] Whisper preload hoan thanh trong %.1fs.", elapsed)
@@ -688,16 +688,22 @@ class SpotlightWindow(QWidget):
         # Fix: luon wrap bang try/except va reset ve None truoc khi tao moi
         if self._tts_worker is not None:
             try:
-                if self._tts_worker.isRunning():
-                    self._tts_worker.terminate()
-                    self._tts_worker.wait(300)
-            except RuntimeError:
-                pass  # C++ object da bi xoa boi deleteLater, bo qua
+                # [FIX] Khong dung terminate() de ngat thread tren Windows vi gay crash EventLoop.
+                # Chi ngat signal de bo qua ket qua cua thread cu
+                self._tts_worker.sig_finished.disconnect()
+            except Exception:
+                pass
             self._tts_worker = None
 
         self._cleanup_tts_file()
 
-        tts_text = text[:TTS_MAX_CHARS]
+        # [FIX] Loai bo ky tu dac biet (*, _, #) ma TTS khong doc duoc de tranh NoAudioReceived
+        import re
+        clean_tts = re.sub(r'[*_#]', '', text).strip()
+        if not clean_tts:
+            return
+
+        tts_text = clean_tts[:TTS_MAX_CHARS]
         self._tts_worker = TTSWorker(tts_text, parent=self)
         self._tts_worker.sig_finished.connect(self._on_tts_downloaded)
         # [CRASH-FIX] Clear Python reference TRUOC khi deleteLater co the chay
@@ -920,6 +926,8 @@ class SpotlightWindow(QWidget):
                 # [FIX-BUG3] Tat moi am thanh hien tai de _is_busy() khong false-positive 
                 # va chan cau lenh tiep theo bi submit
                 self._on_input_text_changed()
+                # [FIX-BUG2] Giai phong co ban TRUOC khi goi _on_submit de pass qua luong _is_busy()
+                self._voice_worker = None
                 self._on_submit()  # Gui ngay vao luong chat
             else:
                 self._show_result("Không nghe rõ bạn nói gì. Vui lòng thử lại.")
