@@ -48,9 +48,10 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # ─── Hằng số cấu hình Chunking ────────────────────────────────────────────────
-MIN_CHUNK_CHARS = 150     # Bỏ qua đoạn văn quá ngắn (tiêu đề, số trang...)
-MAX_CHUNK_CHARS = 2000    # Giới hạn kích thước tối đa một chunk
-PPTX_SLEEP_SECONDS = 4   # Ngủ giữa mỗi slide để tránh Rate Limit Google (15 req/phút)
+MIN_CHUNK_CHARS = 150       # Bỏ qua đoạn văn quá ngắn (tiêu đề, số trang...)
+MAX_CHUNK_CHARS = 2000      # Giới hạn kích thước tối đa một chunk (~500 tokens)
+CHUNK_OVERLAP_CHARS = 400   # Gối đầu văn bản (~100 tokens)
+PPTX_SLEEP_SECONDS = 4      # Ngủ giữa mỗi slide để tránh Rate Limit Google (15 req/phút)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -97,7 +98,18 @@ def chunk_by_paragraph(
                     "page": page,
                     "metadata": metadata or {},
                 })
-            buffer = para
+                # Khởi tạo buffer mới với overlap từ buffer cũ
+                if len(buffer) > CHUNK_OVERLAP_CHARS:
+                    overlap_text = buffer[-CHUNK_OVERLAP_CHARS:]
+                    # Cắt tại khoảng trắng để không đứt ngang từ
+                    space_idx = overlap_text.find(' ')
+                    if space_idx != -1 and space_idx < len(overlap_text) - 1:
+                        overlap_text = overlap_text[space_idx+1:]
+                    buffer = (overlap_text + "\n\n" + para).strip()
+                else:
+                    buffer = para
+            else:
+                buffer = para
 
     # Đẩy phần còn lại của buffer
     if buffer and len(buffer) >= MIN_CHUNK_CHARS:
