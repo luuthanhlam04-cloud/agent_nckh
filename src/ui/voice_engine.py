@@ -163,7 +163,7 @@ class WhisperSTT:
     _instance: Optional["WhisperSTT"] = None
     _model = None
 
-    def __new__(cls, model_name: str = "tiny"):
+    def __new__(cls, model_name: str = "small"):
         # [THREAD-SAFE FIX] Lock de tranh race condition khi 2 thread goi WhisperSTT()
         # dong thoi (preload thread va VoiceWorker) -> tranh load model 2 lan (~400MB lap)
         with _whisper_lock:
