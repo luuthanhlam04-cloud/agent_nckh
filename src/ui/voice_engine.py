@@ -28,24 +28,20 @@ _whisper_lock = threading.Lock()
 
 
 class VoiceRecorder:
-    """Ghi am tu Microphone va luu vao file WAV tam thoi."""
+    """Ghi am tu microphone, luu file WAV, su dung VAD de tu dong ngat."""
 
-    def __init__(self, chunk: int = 1024, format_type=None, channels: int = 1, rate: int = 16000):
-        try:
-            import pyaudio
-            self._pyaudio = pyaudio.PyAudio()
-            self._format  = format_type or pyaudio.paInt16
-        except ImportError:
-            self._pyaudio = None
-            self._format  = None
-
-        self.chunk    = chunk
-        self.channels = channels
-        self.rate     = rate
-        self._frames: list = []
+    def __init__(self, on_silence_detected=None):
+        import pyaudio
+        self.chunk = 1024
+        self.format = pyaudio.paInt16
+        self.channels = 1
+        self.rate = 16000
+        self._pyaudio = pyaudio.PyAudio()
+        self._stream = None
+        self._frames = []
         self._is_recording = False
-        self._stream       = None
-        self._record_thread: Optional[threading.Thread] = None
+        self._record_thread = None
+        self._on_silence_detected = on_silence_detected
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -59,7 +55,7 @@ class VoiceRecorder:
         self._is_recording = True
         try:
             self._stream = self._pyaudio.open(
-                format=self._format,
+                format=self.format,
                 channels=self.channels,
                 rate=self.rate,
                 input=True,
@@ -116,11 +112,55 @@ class VoiceRecorder:
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _record_loop(self):
-        """Doc audio frames lien tuc cho den khi _is_recording = False."""
+        """Doc audio frames lien tuc cho den khi _is_recording = False hoac VAD tu ngat."""
+        import audioop
+        CALIBRATION_DURATION = 0.5 # 0.5 giay dau de do on nen (Auto-Calibration)
+        SILENCE_DURATION = 1.2     # [FIX] VAD ve muc an toan 1.2s cho dac thu am vuc Tieng Viet
+        
+        frames_per_sec = self.rate / self.chunk
+        max_silence_frames = int(SILENCE_DURATION * frames_per_sec)
+        calibration_frames_count = int(CALIBRATION_DURATION * frames_per_sec)
+        
+        silence_count = 0
+        has_spoken = False
+        
+        is_calibrating = True
+        calibration_rms_list = []
+        silence_threshold = 500  # Default fallback
+
         while self._is_recording and self._stream:
             try:
                 data = self._stream.read(self.chunk, exception_on_overflow=False)
                 self._frames.append(data)
+                
+                # VAD: Tinh nang luong am thanh
+                rms = audioop.rms(data, 2)
+                
+                if is_calibrating:
+                    calibration_rms_list.append(rms)
+                    if len(calibration_rms_list) >= calibration_frames_count:
+                        is_calibrating = False
+                        avg_noise = sum(calibration_rms_list) / len(calibration_rms_list)
+                        # Threshold = Noise + 300 (buffer tranh tieng tho), min la 500
+                        silence_threshold = max(500, int(avg_noise + 300))
+                        logger.info("[VoiceRecorder] Calibration xong. Noise: %.1f, Threshold: %d", avg_noise, silence_threshold)
+                    continue  # Bo qua VAD check trong luc dang calibrate
+                
+                if rms > silence_threshold:
+                    silence_count = 0
+                    has_spoken = True
+                else:
+                    if has_spoken:
+                        silence_count += 1
+                        
+                # Tu dong ngat khi im lang du lau (chi khi da tung noi)
+                if has_spoken and silence_count > max_silence_frames:
+                    logger.info("[VoiceRecorder] Phat hien im lang > 1.2s. Tu dong ngat mic.")
+                    self._is_recording = False
+                    if self._on_silence_detected:
+                        self._on_silence_detected()
+                    break
+                    
             except OSError as e:
                 logger.error("[VoiceRecorder] Microphone ngat ket noi: %s", e, exc_info=True)
                 self._is_recording = False
@@ -138,7 +178,7 @@ class VoiceRecorder:
 
             with wave.open(path, "wb") as wf:
                 wf.setnchannels(self.channels)
-                wf.setsampwidth(self._pyaudio.get_sample_size(self._format))
+                wf.setsampwidth(self._pyaudio.get_sample_size(self.format))
                 wf.setframerate(self.rate)
                 wf.writeframes(b"".join(self._frames))
 
@@ -151,139 +191,90 @@ class VoiceRecorder:
 
 class WhisperSTT:
     """
-    Nhan dien giong noi (STT) su dung openai-whisper (tiny) voi Pre-Loading Singleton.
-
-    Uu diem kien truc:
-      - Singleton thread-safe (threading.Lock): khong load model 2 lan dung RAM.
-      - fp16 flag duoc cache 1 lan o _load_model, khong goi syscall moi transcribe.
-      - Tham so toc do cao: beam_size=1, condition_on_previous_text=False, temperature=0
-        -> giam 40-60% latency so voi mac dinh.
+    Nhan dien giong noi (STT) su dung Local Microservice (whisper_server.py).
+    
+    Uu diem kien truc (Moi):
+      - Khong load torch/whisper trong tien trinh nay, ne GIL, bao ve RAM UI.
+      - Doc cong (port) tu temp/.whisper_port de tu dong cap nhat port moi.
+      - Gui request POST den server de giai ma giong noi.
     """
 
     _instance: Optional["WhisperSTT"] = None
-    _model = None
 
     def __new__(cls, model_name: str = "small"):
-        # [THREAD-SAFE FIX] Lock de tranh race condition khi 2 thread goi WhisperSTT()
-        # dong thoi (preload thread va VoiceWorker) -> tranh load model 2 lan (~400MB lap)
         with _whisper_lock:
             if cls._instance is None:
                 inst = super().__new__(cls)
                 inst.model_name = model_name
-                inst._use_fp16  = False  # Se duoc cap nhat trong _load_model
-                inst._load_model()
-                # [B1-FIX] Neu load that bai -> reset instance de lan sau thu lai
-                if cls._model is None:
-                    return None
                 cls._instance = inst
         return cls._instance
 
-    def _load_model(self):
-        """Nap model Whisper vao RAM (chi lam 1 lan). Cache fp16 flag."""
+    def _get_server_port(self) -> int:
+        port_file = os.path.join("temp", ".whisper_port")
+        if os.path.exists(port_file):
+            try:
+                with open(port_file, "r") as f:
+                    return int(f.read().strip())
+            except:
+                pass
+        return 8001 # Fallback neu chua co file
+
+    def _ping_server(self, port: int) -> bool:
+        import urllib.request
         try:
-            import whisper
-            import torch
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/ping", method="GET")
+            with urllib.request.urlopen(req, timeout=1.0) as response:
+                return response.status == 200
+        except:
+            return False
 
-            # [FFMPEG-FIX] Inject ffmpeg vao PATH truoc khi nap model
-            self._ensure_ffmpeg_in_path()
-
-            # [OPT] Cache fp16 flag: tinh 1 lan, tranh torch.cuda syscall moi transcribe
-            self._use_fp16 = torch.cuda.is_available()
-            device = "cuda" if self._use_fp16 else "cpu"
-
-            logger.info("[WhisperSTT] Dang nap model '%s' tren %s...", self.model_name, device.upper())
-            t0 = time.perf_counter()
-            self.__class__._model = whisper.load_model(self.model_name, device=device)
-            elapsed = time.perf_counter() - t0
-            logger.info("[WhisperSTT] Model nap xong trong %.1fs. RAM san sang.", elapsed)
-
-        except ImportError as e:
-            logger.error("[WhisperSTT] Thieu thu vien whisper/torch: %s. Chay: pip install openai-whisper torch", e, exc_info=True)
-        except Exception as e:
-            logger.error("[WhisperSTT] Loi nap model: %s", e, exc_info=True)
-
-    @staticmethod
-    def _ensure_ffmpeg_in_path():
-        """
-        Inject ffmpeg vao PATH neu chua co.
-        Chi can thuc hien 1 lan, anh huong toan bo process.
-        """
-        import shutil
-        if shutil.which("ffmpeg"):
-            return  # Da co trong PATH
-
-        candidates = []
-
-        env_path = os.environ.get("FFMPEG_PATH", "")
-        if env_path:
-            candidates.append(env_path)
-
-        local_app = os.environ.get("LOCALAPPDATA", "")
-        if local_app:
-            winget_base = os.path.join(local_app, "Microsoft", "WinGet", "Packages")
-            if os.path.isdir(winget_base):
-                for entry in os.listdir(winget_base):
-                    if "ffmpeg" in entry.lower():
-                        pkg_dir = os.path.join(winget_base, entry)
-                        for root, _, files in os.walk(pkg_dir):
-                            if "ffmpeg.exe" in files:
-                                candidates.append(root)
-                                break
-
-        for path in [
-            os.path.join(os.path.expanduser("~"), "scoop", "shims"),
-            r"C:\ProgramData\chocolatey\bin",
-        ]:
-            if os.path.isdir(path):
-                candidates.append(path)
-
-        for candidate in candidates:
-            if os.path.isfile(os.path.join(candidate, "ffmpeg.exe")):
-                os.environ["PATH"] = candidate + os.pathsep + os.environ.get("PATH", "")
-                logger.info("[WhisperSTT] Da inject ffmpeg vao PATH: %s", candidate)
-                return
-
-        logger.warning("[WhisperSTT] Khong tim thay ffmpeg. Whisper co the bi [WinError 2].")
+    def _load_model(self):
+        """Khong con load model vao RAM o day nua. Chi ping de chac chan server song."""
+        port = self._get_server_port()
+        if self._ping_server(port):
+            logger.info(f"[WhisperSTT Client] Da ket noi thanh cong Whisper Server tai port {port}")
+        else:
+            logger.warning(f"[WhisperSTT Client] Chua the ping den Whisper Server o port {port}. Server co the chua khoi dong xong.")
 
     def transcribe(self, audio_path: str) -> str:
-        """
-        Giai ma audio -> text. Model da nap san nen nhanh.
-        Tham so toc do cao: beam_size=1, temperature=0, no previous text.
-        """
-        if not audio_path or not os.path.exists(audio_path):
-            return ""
+        """Gui file WAV den Whisper Server de giai ma. Tra ve van ban."""
+        port = self._get_server_port()
+        import time
+        import urllib.request
+        import json
 
-        if self.__class__._model is None:
-            return "Lỗi: Model Whisper chưa được nạp. Kiểm tra logs."
-
-        text = ""
+        start_t = time.time()
+        logger.info(f"[WhisperSTT Client] Bat dau gui audio toi server port {port}...")
         try:
-            logger.info("[WhisperSTT] Bat dau giai ma...")
-            t0 = time.perf_counter()
+            with open(audio_path, "rb") as f:
+                audio_data = f.read()
 
-            result = self.__class__._model.transcribe(
-                audio_path,
-                language="vi",
-                fp16=self._use_fp16,        # [OPT] Dung cached flag thay vi goi syscall
-                beam_size=1,                # [OPT] Giam tu 5 -> 1: nhanh hon ~40%
-                best_of=1,                  # [OPT] Khong can multiple candidates
-                condition_on_previous_text=False,  # [OPT] Khong dung previous context: nhanh hon
-                temperature=0,             # [OPT] Greedy decode, deterministic, nhanh nhat
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/transcribe", 
+                data=audio_data, 
+                headers={'Content-Type': 'application/octet-stream'},
+                method="POST"
             )
-            text = result.get("text", "").strip()
-            elapsed = time.perf_counter() - t0
-            logger.info("[WhisperSTT] Ket qua (%.1fs): '%s'", elapsed, text[:80])
+            
+            # [BLOCKING FIX] Nham bao ve UI, tham so timeout dc tang len 30s de ho tro CPU yeu load model nang
+            with urllib.request.urlopen(req, timeout=30.0) as response:
+                result_json = response.read().decode('utf-8')
+                result = json.loads(result_json)
+                text = result.get("text", "")
 
+            logger.info(f"[WhisperSTT Client] Ket qua (%.1fs): '%s'", time.time() - start_t, text)
+            return text
+        except urllib.error.URLError as e:
+            logger.error("[WhisperSTT Client] Khong the ket noi toi server: %s", e)
+            return f"Lỗi: Không thể kết nối máy chủ nhận diện giọng nói (Port {port})."
         except Exception as e:
-            logger.error("[WhisperSTT] Loi giai ma: %s", e, exc_info=True)
-            text = f"Lỗi giải mã giọng nói: {str(e)[:100]}"
+            logger.error("[WhisperSTT Client] Loi giai ma: %s", e, exc_info=True)
+            return f"Lỗi giải mã giọng nói: {str(e)[:100]}"
         finally:
             # Don audio file ngay sau khi doc
             try:
                 os.remove(audio_path)
             except Exception:
                 pass
-            # [OPT] Giai phong tensor PyTorch o GPU/CPU sau inference
+            import gc
             gc.collect()
-
-        return text

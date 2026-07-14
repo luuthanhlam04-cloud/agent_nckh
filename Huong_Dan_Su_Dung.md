@@ -28,7 +28,20 @@ Tài liệu này hướng dẫn cách khởi chạy, kiểm thử các tính nă
 
 ---
 
-## 3. THOÁT VÀ ĐÓNG DỰ ÁN AN TOÀN
+## 3. TÙY CHỈNH MÔ HÌNH NHẬN DIỆN GIỌNG NÓI (WHISPER)
+
+Hệ thống cung cấp cơ chế linh hoạt (Microservice) để cấu hình mô hình nhận diện giọng nói STT thông qua file `.env`. Mặc định nếu không có khai báo, hệ thống sẽ tự động dùng model **Turbo**.
+
+| Mô Hình | Cú pháp thêm vào file `.env` | Tiêu thụ RAM | Phù hợp với |
+| :---: | :--- | :--- | :--- |
+| **Turbo** | `WHISPER_MODEL=turbo` (Hoặc bỏ trống) | ~ 1.5GB - 2GB | Đề xuất! Tốc độ nhanh nhất, nhận diện Tiếng Việt cực chuẩn, có tự động thêm dấu câu. Phù hợp máy dư dả RAM. |
+| **Small** | `WHISPER_MODEL=small` | ~ 400MB - 500MB | Nhẹ nhàng, đáp ứng mức cơ bản. Phù hợp nếu máy đang phải chạy nhiều phần mềm nặng khác cùng lúc. |
+
+**Cách đổi model:** Mở file `.env`, thêm dòng cấu hình bạn muốn (ví dụ `WHISPER_MODEL=small`). Sau đó khởi động lại app (`python main.py`).
+
+---
+
+## 4. THOÁT VÀ ĐÓNG DỰ ÁN AN TOÀN
 
 Hệ thống được thiết kế chạy ngầm (Daemon). Vì vậy, bạn cần biết cách đóng an toàn để hệ thống xả RAM và trả lại Phím tắt (Hotkeys) cho Windows.
 

@@ -81,12 +81,14 @@ _DATE_PATTERN = re.compile(
     r"|(?:ngày|hôm nay)\s+(?:là\s+)?(?:mấy|bao nhiêu|ngày nào)"
     r"|ngày hiện tại(?:\s+là\s+(?:ngày bao nhiêu|mấy))?"
     r"|ngày mấy\s+rồi|hôm nay ngày mấy"
+    r"|(?:năm nay|bây giờ)\s+(?:là\s+)?(?:năm mấy|năm bao nhiêu|năm nào)"
+    r"|(?:tháng này|bây giờ)\s+(?:là\s+)?(?:tháng mấy|tháng bao nhiêu|tháng nào)"
     r")" + _VI_SUFFIX,
     re.IGNORECASE | re.UNICODE,
 )
 _DAY_PATTERN = re.compile(
     r"^(?:quản gia|hãy|cho tôi biết|xem|cho biết)?\s*"
-    r"(?:hôm nay\s+)?(?:thứ mấy|thứ mấy rồi|ngày thứ mấy|thứ mấy hôm nay)"
+    r"(?:hôm nay\s+)?(?:là\s+)?(?:thứ mấy|thứ mấy rồi|ngày thứ mấy|thứ mấy hôm nay)"
     + _VI_SUFFIX,
     re.IGNORECASE | re.UNICODE,
 )
@@ -106,6 +108,17 @@ def check_time_queries(user_input: str) -> Optional[str]:
 
     # [DEBUG] Log chinh xac van ban nhan duoc (giup debug Whisper output)
     logger.debug("[Interceptor] check_time_queries nhan: %r", text)
+
+    # Them kiem tra nam rieng de phan hoi chinh xac nhat
+    if re.search(r"(năm nay|năm bao nhiêu|năm mấy|năm nào)", text, re.IGNORECASE):
+        result = f"Năm nay là năm {now.year}."
+        logger.info("[Interceptor] Year query → %s", result)
+        return result
+        
+    if re.search(r"(tháng này|tháng bao nhiêu|tháng mấy|tháng nào)", text, re.IGNORECASE):
+        result = f"Bây giờ là tháng {now.month} năm {now.year}."
+        logger.info("[Interceptor] Month query → %s", result)
+        return result
 
     if _DATETIME_PATTERN.match(text):
         result = f"Bây giờ là {now.strftime('%H:%M')} phút, {weekday}, ngày {now.strftime('%d/%m/%Y')}."
@@ -247,15 +260,15 @@ _OS_PATTERN = re.compile(
 )
 
 _APP_COMMANDS = {
-    "youtube":        "start chrome https://youtube.com",
-    "zalo":           "start zalo",
-    "zotero":         "start zotero:",
-    "chrome":         "start chrome",
-    "vs code":        "code .",
-    "vscode":         "code .",
-    "visual studio":  "code .",
-    "word":           "start winword",
-    "thư mục":        "explorer .",
+    "youtube":        ("url", "https://youtube.com"),
+    "zalo":           ("exe", "start zalo"),
+    "zotero":         ("url", "zotero:"),
+    "chrome":         ("exe", "start chrome"),
+    "vs code":        ("exe", "code ."),
+    "vscode":         ("exe", "code ."),
+    "visual studio":  ("exe", "code ."),
+    "word":           ("exe", "start winword"),
+    "thư mục":        ("exe", "explorer ."),
 }
 
 def check_os_commands(user_input: str) -> Optional[str]:
@@ -272,11 +285,15 @@ def check_os_commands(user_input: str) -> Optional[str]:
             break
 
     if command:
-        # [B8-FIX] Wrap trong try/except: neu app chua cai, Windows tra loi am
-        # nhung subprocess khong raise exception. Log ro rang giup debug.
         try:
-            result = subprocess.Popen(command, shell=True)
-            logger.info("[Interceptor] OS Command: %s -> %s (PID: %s)", app_keyword, command, result.pid)
+            action_type, target = command
+            if action_type == "url":
+                os.startfile(target)
+                logger.info("[Interceptor] OS Startfile: %s -> %s", app_keyword, target)
+            else:
+                result = subprocess.Popen(target, shell=True)
+                # Tuan thu nghiem ngat: Khong dung .wait() de hoan toan la Fire-and-Forget
+                logger.info("[Interceptor] OS Command: %s -> %s (PID: %s)", app_keyword, target, result.pid)
         except Exception as e:
             logger.error("[Interceptor] Khong the chay lenh OS '%s': %s", command, e)
             return f"Loi mo '{match.group(1).strip()}': {str(e)[:60]}"
