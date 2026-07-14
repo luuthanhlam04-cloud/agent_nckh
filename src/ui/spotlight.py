@@ -75,6 +75,8 @@ from PyQt6.QtGui import (
     QPainter, QColor, QPainterPath, QIcon, QAction,
     QFont, QPixmap,
 )
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PyQt6.QtCore import QUrl
 
 logger = logging.getLogger("SpotlightUI")
 
@@ -86,7 +88,7 @@ BORDER_RADIUS      = 15
 BG_ALPHA           = 210    # Do mo nen (0-255), ~82% opacity
 ANIMATION_DURATION = 250    # ms cho animation mo rong/thu gon
 GLOBAL_HOTKEY      = "ctrl+space"
-VOICE_HOTKEY       = "ctrl+shift+space"
+VOICE_HOTKEY       = "alt+space"    # To hop 2 phim an toan cho Voice
 TTS_MAX_CHARS      = 800    # Gioi han ky tu gui cho TTS (~1-2 phut doc)
 TTS_VOICE          = "vi-VN-NamMinhNeural"   # Giong doc tieng Viet Azure
 
@@ -122,10 +124,16 @@ class AIWorker(QThread):
             logger.info("[AIWorker] Bat dau xu ly: '%s'", self._user_input[:60])
             answer = self._process_fn(self._user_input)
             logger.info("[AIWorker] Hoan thanh. Do dai: %d ky tu.", len(answer))
-            self.sig_finished.emit(answer)
+            try:
+                self.sig_finished.emit(answer)
+            except RuntimeError:
+                pass
         except Exception as e:
             logger.error("[AIWorker] Loi: %s", e, exc_info=True)
-            self.sig_error.emit(f"He thong gap su co: {str(e)[:120]}")
+            try:
+                self.sig_error.emit(f"He thong gap su co: {str(e)[:120]}")
+            except RuntimeError:
+                pass
 
 
 # ==============================================================================
@@ -135,9 +143,10 @@ class AIWorker(QThread):
 class TTSWorker(QThread):
     """
     Tai file MP3 tu Azure (edge-tts) trong Worker Thread.
-    Main Thread nhan duong dan qua signal finished, roi phat bang QMediaPlayer.
+    Cat text thanh tung cau nho va gui tung file MP3 (Streaming).
     """
-    sig_finished = pyqtSignal(str)   # Duong dan MP3 hoac "" neu loi
+    sig_chunk_ready = pyqtSignal(str)   # Duong dan MP3 cua 1 chunk
+    sig_done = pyqtSignal()             # Da hoan thanh viec tai tat ca chunks
 
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
@@ -146,28 +155,65 @@ class TTSWorker(QThread):
     def run(self):
         if not _EDGE_TTS_AVAILABLE:
             logger.warning("[TTSWorker] edge-tts chua cai. Bo qua TTS.")
-            self.sig_finished.emit("")
+            try:
+                self.sig_done.emit()
+            except RuntimeError:
+                pass
             return
 
         try:
-            async def _download():
-                communicate = _edge_tts_mod.Communicate(self._text, voice=TTS_VOICE)
+            import re
+            # Normalize date for Edge-TTS (DD/MM/YYYY -> ngày DD tháng MM năm YYYY)
+            text_for_tts = re.sub(r'(\d{1,2})/(\d{1,2})/(\d{4})', r'ngày \1 tháng \2 năm \3', self._text)
+
+            # Smart Regex: Tach cau o dau cham, cham hoi, cham than theo sau boi dau cach hoac xuong dong
+            raw_chunks = re.split(r'(?<=[.?!])\s+|\n+', text_for_tts)
+            
+            # Gop cac cau qua ngan (<20 ky tu) vao cau tiep theo
+            chunks = []
+            current_chunk = ""
+            for rc in raw_chunks:
+                rc_strip = rc.strip()
+                if not rc_strip:
+                    continue
+                current_chunk += (" " + rc_strip if current_chunk else rc_strip)
+                if len(current_chunk) >= 20 or rc == raw_chunks[-1]:
+                    chunks.append(current_chunk)
+                    current_chunk = ""
+            if current_chunk:
+                chunks.append(current_chunk)
+
+            async def _download_chunk(chunk_text):
+                communicate = _edge_tts_mod.Communicate(chunk_text, voice=TTS_VOICE)
                 fd, path = tempfile.mkstemp(suffix=".mp3")
                 os.close(fd)
                 await communicate.save(path)
                 return path
 
-            # [FIX-BUG4] Tranh xung dot event loop voi Qt
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            path = loop.run_until_complete(_download())
+            
+            for chunk in chunks:
+                if not self.isRunning():
+                    break
+                path = loop.run_until_complete(_download_chunk(chunk))
+                logger.debug("[TTSWorker] Chunk MP3 tai xong: %s", path)
+                try:
+                    self.sig_chunk_ready.emit(path)
+                except RuntimeError:
+                    break
+            
             loop.close()
-
-            logger.info("[TTSWorker] MP3 tai xong: %s", path)
-            self.sig_finished.emit(path)
+            try:
+                self.sig_done.emit()
+            except RuntimeError:
+                pass
         except Exception as e:
             logger.error("[TTSWorker] Loi tai TTS: %s", e, exc_info=True)
-            self.sig_finished.emit("")
+            try:
+                self.sig_done.emit()
+            except RuntimeError:
+                pass
 
 
 # ==============================================================================
@@ -193,17 +239,29 @@ class VoiceWorker(QThread):
             # Neu khong guard -> stt.transcribe() raise AttributeError -> app crash
             if stt is None:
                 logger.error("[VoiceWorker] Model Whisper khong the khoi dong. Kiem tra log.")
-                self.sig_finished.emit("Lỗi: Không thể nạp model Whisper. Kiểm tra RAM/ffmpeg.")
+                try:
+                    self.sig_finished.emit("Lỗi: Không thể nạp model Whisper. Kiểm tra RAM/ffmpeg.")
+                except RuntimeError:
+                    pass
                 return
             text = stt.transcribe(self._audio_path)
-            self.sig_finished.emit(text if text else "Lỗi: Whisper trả về kết quả trống.")
+            try:
+                self.sig_finished.emit(text if text else "Lỗi: Whisper trả về kết quả trống.")
+            except RuntimeError:
+                pass
         except ImportError:
             logger.error("[VoiceWorker] Thieu thu vien src.ui.voice_engine")
-            self.sig_finished.emit("Lỗi: Không tìm thấy engine STT.")
+            try:
+                self.sig_finished.emit("Lỗi: Không tìm thấy engine STT.")
+            except RuntimeError:
+                pass
         except Exception as e:
             logger.error("[VoiceWorker] Loi: %s", e, exc_info=True)
             # [FIX] Emit loi thuc te thay vi "" de user biet dieu gi xay ra
-            self.sig_finished.emit(f"Lỗi giải mã: {str(e)[:80]}")
+            try:
+                self.sig_finished.emit(f"Lỗi giải mã: {str(e)[:80]}")
+            except RuntimeError:
+                pass
 
 
 # ==============================================================================
@@ -222,7 +280,7 @@ class GlobalHotkeyWorker(QThread):
     keyboard.unhook_all() giai phong hook truoc khi thread ket thuc.
     """
     sig_toggle = pyqtSignal()   # Phat ve Main Thread khi hotkey duoc bam
-    sig_voice = pyqtSignal()    # Phat ve khi bam Ctrl+Shift+Space (Voice Mode)
+    sig_voice = pyqtSignal()    # Phat ve khi bam Alt+Space (Voice Mode)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -246,11 +304,17 @@ class GlobalHotkeyWorker(QThread):
 
             def _on_hotkey():
                 logger.info("[Hotkey] %s bam -> toggle_signal.", GLOBAL_HOTKEY)
-                self.sig_toggle.emit()
+                try:
+                    self.sig_toggle.emit()
+                except RuntimeError:
+                    pass
                 
             def _on_voice_hotkey():
                 logger.info("[Hotkey] %s bam -> voice_signal.", VOICE_HOTKEY)
-                self.sig_voice.emit()
+                try:
+                    self.sig_voice.emit()
+                except RuntimeError:
+                    pass
 
             keyboard.add_hotkey(GLOBAL_HOTKEY, _on_hotkey)
             keyboard.add_hotkey(VOICE_HOTKEY, _on_voice_hotkey)
@@ -279,6 +343,7 @@ class SpotlightWindow(QWidget):
       intercept_fn : Ham Regex Interceptor (da partial(vault_path=...) tu main.py)
                      -> Chi can goi intercept_fn(text, last_response=...)
     """
+    sig_vad_stopped = pyqtSignal()  # Signal phai de o muc class
 
     def __init__(
         self,
@@ -297,13 +362,20 @@ class SpotlightWindow(QWidget):
         self._tts_worker: Optional[TTSWorker] = None
         self._voice_worker: Optional[VoiceWorker] = None
         
+        # State cho TTS Playlist
+        self._tts_playlist = []
+        self._is_playing_tts = False
+        self._current_tts_file = ""
+        
         # State & Engine cho Voice Mode
         self._is_recording = False
         self._waiting_for_greeting = False
+        # setup VAD signal handler
+        self.sig_vad_stopped.connect(self._on_vad_stop)
+
         try:
-            from src.ui.voice_engine import VoiceRecorder
-            self._voice_recorder = VoiceRecorder()
-            # [FIX-BUG1] Da xoa lambda preload Whisper o day, giu lai preload co log o duoi
+            from src.ui.voice_engine import WhisperSTT, VoiceRecorder
+            self._voice_recorder = VoiceRecorder(on_silence_detected=lambda: self.sig_vad_stopped.emit())
         except ImportError:
             self._voice_recorder = None
             logger.warning("[SpotlightWindow] Khong the nap VoiceRecorder (thieu file hoac pyaudio).")
@@ -314,22 +386,25 @@ class SpotlightWindow(QWidget):
         self._setup_greeting_player()
         self._setup_tts_player()
 
-        # Preload WhisperSTT trong daemon thread de khoi dong UI khong bi giat
-        def _preload_whisper():
+        # Kiem tra ket noi WhisperSTT Server trong daemon thread
+        import threading
+        def _check_whisper_server():
             try:
                 import time
-                t0 = time.perf_counter()
                 from src.ui.voice_engine import WhisperSTT
-                stt = WhisperSTT(model_name="small")
-                elapsed = time.perf_counter() - t0
-                if stt is not None:
-                    logger.info("[SpotlightWindow] Whisper preload hoan thanh trong %.1fs.", elapsed)
-                else:
-                    logger.error("[SpotlightWindow] Whisper preload THAT BAI - kiem tra ffmpeg/RAM.")
+                stt = WhisperSTT()
+                # Doi toi da 5 giay de ping server xem no da len chua
+                for _ in range(5):
+                    if stt._ping_server(stt._get_server_port()):
+                        logger.info(f"[SpotlightWindow] Da ket noi Whisper Server o port {stt._get_server_port()}.")
+                        return
+                    import threading
+                    threading.Event().wait(1.0)
+                logger.warning("[SpotlightWindow] Whisper Server co the chua hoat dong (Ping timeout sau 5s).")
             except Exception as e:
-                logger.error("[SpotlightWindow] Whisper preload exception: %s", e, exc_info=True)
+                logger.error("[SpotlightWindow] Kiem tra Whisper Server that bai: %s", e, exc_info=True)
 
-        threading.Thread(target=_preload_whisper, daemon=True, name="WhisperPreload").start()
+        threading.Thread(target=_check_whisper_server, daemon=True, name="WhisperServerCheck").start()
 
     # ── Khoi tao ─────────────────────────────────────────────────────────────
 
@@ -528,9 +603,13 @@ class SpotlightWindow(QWidget):
             return
 
         # [FIX-3] Guard double-start: neu worker dang chay thi bo qua
-        if self._ai_worker and self._ai_worker.isRunning():
-            logger.warning("[SpotlightWindow] AIWorker dang ban, bo qua lenh moi.")
-            return
+        if self._ai_worker is not None:
+            try:
+                if self._ai_worker.isRunning():
+                    logger.warning("[SpotlightWindow] AIWorker dang ban, bo qua lenh moi.")
+                    return
+            except RuntimeError:
+                self._ai_worker = None
 
         # Hien trang thai + mo rong cua so
         self.status_label.show()
@@ -648,7 +727,6 @@ class SpotlightWindow(QWidget):
     def _setup_tts_player(self):
         """Khoi tao QMediaPlayer de phat Audio TTS AI tra loi."""
         try:
-            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
             self._tts_player = QMediaPlayer(self)
             self._tts_audio = QAudioOutput(self)
             self._tts_audio.setVolume(1.0)
@@ -660,19 +738,36 @@ class SpotlightWindow(QWidget):
             logger.warning("[SpotlightWindow] Khong the nap QMediaPlayer TTS: %s", e, exc_info=True)
             self._tts_player = None
 
-    def _cleanup_tts_file(self):
+    def _cleanup_tts_file(self, specific_file: str = None):
         """[WinError 32 Fix] Nha QUrl ra khoi QMediaPlayer truoc roi moi xoa file."""
         if hasattr(self, '_tts_player') and self._tts_player:
-            from PyQt6.QtCore import QUrl
+            self._tts_player.stop()
             self._tts_player.setSource(QUrl())  # Giai phong file khoa tren Windows
             
-        if hasattr(self, '_current_tts_file') and self._current_tts_file and os.path.exists(self._current_tts_file):
-            try:
-                os.remove(self._current_tts_file)
-                logger.debug("[SpotlightWindow] Da xoa file TTS rác: %s", self._current_tts_file)
-            except Exception as e:
-                logger.warning("[SpotlightWindow] Khong the xoa file TTS: %s", e, exc_info=True)
+        if specific_file:
+            # Xoa 1 file nhat dinh (khi phat xong 1 chunk)
+            if os.path.exists(specific_file):
+                try:
+                    os.remove(specific_file)
+                    logger.debug("[SpotlightWindow] Da xoa chunk TTS: %s", specific_file)
+                except Exception as e:
+                    logger.warning("[SpotlightWindow] Khong the xoa chunk TTS: %s", e)
+        else:
+            # Xoa toan bo playlist (khi bi ngat luong)
+            files_to_delete = self._tts_playlist.copy()
+            if self._current_tts_file:
+                files_to_delete.append(self._current_tts_file)
+            
+            self._tts_playlist.clear()
+            self._is_playing_tts = False
             self._current_tts_file = ""
+            
+            for f in files_to_delete:
+                if os.path.exists(f):
+                    try:
+                        os.remove(f)
+                    except Exception as e:
+                        logger.warning("[SpotlightWindow] Khong the xoa file TTS %s: %s", f, e)
 
     def _start_tts(self, text: str):
         """Khoi dong TTSWorker de tai file, huy file cu neu co."""
@@ -690,7 +785,8 @@ class SpotlightWindow(QWidget):
             try:
                 # [FIX] Khong dung terminate() de ngat thread tren Windows vi gay crash EventLoop.
                 # Chi ngat signal de bo qua ket qua cua thread cu
-                self._tts_worker.sig_finished.disconnect()
+                self._tts_worker.sig_chunk_ready.disconnect()
+                self._tts_worker.sig_done.disconnect()
             except Exception:
                 pass
             self._tts_worker = None
@@ -705,34 +801,57 @@ class SpotlightWindow(QWidget):
 
         tts_text = clean_tts[:TTS_MAX_CHARS]
         self._tts_worker = TTSWorker(tts_text, parent=self)
-        self._tts_worker.sig_finished.connect(self._on_tts_downloaded)
+        self._tts_worker.sig_chunk_ready.connect(self._on_tts_chunk_ready)
         # [CRASH-FIX] Clear Python reference TRUOC khi deleteLater co the chay
         # Dam bao lan goi _start_tts tiep theo khong gap RuntimeError
-        self._tts_worker.sig_finished.connect(lambda: setattr(self, '_tts_worker', None))
-        self._tts_worker.sig_finished.connect(self._tts_worker.deleteLater)
+        self._tts_worker.sig_done.connect(lambda: setattr(self, '_tts_worker', None))
+        self._tts_worker.sig_done.connect(self._tts_worker.deleteLater)
         self._tts_worker.start()
 
 
-    def _on_tts_downloaded(self, path: str):
-        """Khi TTSWorker bao ve da tai xong MP3, tien hanh phat."""
+    def _on_tts_chunk_ready(self, path: str):
+        """Khi TTSWorker tai xong 1 chunk, nap vao playlist va phat luon neu ranh."""
         if not path:
             return
+        self._tts_playlist.append(path)
+        logger.debug(f"[SpotlightWindow] Nap chunk vao playlist. Hien co {len(self._tts_playlist)} chunks.")
+        if not self._is_playing_tts:
+            self._play_next_tts_chunk()
+
+    def _play_next_tts_chunk(self):
+        """Phat chunk tiep theo trong playlist."""
+        if not self._tts_playlist:
+            self._is_playing_tts = False
+            self._current_tts_file = ""
+            return
+
+        self._is_playing_tts = True
+        path = self._tts_playlist.pop(0)
         self._current_tts_file = path
+
         if hasattr(self, '_tts_player') and self._tts_player:
-            from PyQt6.QtCore import QUrl
             self._tts_player.setSource(QUrl.fromLocalFile(path))
             self._tts_player.play()
         else:
-            # Fallback neu may khong the khoi tao duoc Media Player
             os.startfile(path)
+            self._is_playing_tts = False
             
     def _on_tts_status_changed(self, status):
-        """Xoa file rac ngay khi AI doc xong."""
-        from PyQt6.QtMultimedia import QMediaPlayer
+        """Xoa file rac ngay khi doc xong va tiep tuc phat chunk tiep theo."""
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            # [B11-FIX] Delay 150ms de dam bao QMediaPlayer giai phong file handle
-            # truoc khi xoa, tranh [WinError 32] tren Windows
-            QTimer.singleShot(150, self._cleanup_tts_file)
+            old_file = self._current_tts_file
+            self._current_tts_file = ""
+            # Giai phong file va tiep tuc phat playlist
+            if hasattr(self, '_tts_player') and self._tts_player:
+                self._tts_player.stop()
+                self._tts_player.setSource(QUrl())
+            
+            # Phat file tiep theo ngay
+            self._play_next_tts_chunk()
+            
+            # Delay 150ms xoa file cu de tranh WinError 32
+            if old_file:
+                QTimer.singleShot(150, lambda: self._cleanup_tts_file(old_file))
 
     # ── Dieu khien hien thi cua so ───────────────────────────────────────────
 
@@ -773,10 +892,8 @@ class SpotlightWindow(QWidget):
         self._play_greeting(for_voice=False)
         
     def _setup_greeting_player(self):
-        """Khoi tao QMediaPlayer ngam de phat cau chao khong do UI."""
+        """Chuan bi audio player cho loi chao de phat ngay tuc thi ma khong delay."""
         try:
-            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-            from PyQt6.QtCore import QUrl
             self._greeting_player = QMediaPlayer(self)
             self._greeting_audio = QAudioOutput(self)
             self._greeting_player.setAudioOutput(self._greeting_audio)
@@ -792,7 +909,6 @@ class SpotlightWindow(QWidget):
     def _play_greeting(self, for_voice=False):
         """Phat loi chao. Neu for_voice=True, se doi status_changed de bat micro."""
         if hasattr(self, '_greeting_player') and self._greeting_player:
-            from PyQt6.QtMultimedia import QMediaPlayer
             # [B3/B6-FIX] Set flag TRUOC khi stop/play, tranh race condition:
             # neu player dang Stopped, play() co the phat EndOfMedia ngay truoc khi
             # flag duoc set -> mic khong bao gio bat
@@ -828,18 +944,21 @@ class SpotlightWindow(QWidget):
                 self._cleanup_tts_file()
                 
     def _on_greeting_status(self, status):
-        """Bat micro khi am thanh loi chao ket thuc (chi ap dung Voice Mode)."""
-        from PyQt6.QtMultimedia import QMediaPlayer
+        """Kich hoat ghi am ngay sau khi loi chao ket thuc."""
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            # [B3/B6-FIX] Chi kiem tra _waiting_for_greeting, khong kiem tra _is_recording
-            # vi _is_recording co the da bi thay doi boi toggle_voice_recording()
             if getattr(self, '_waiting_for_greeting', False):
                 self._start_recording_now()
 
+    def _on_vad_stop(self):
+        """Handle VAD signal to stop recording automatically."""
+        if self._is_recording:
+            self.toggle_voice_recording()
+
     def _start_recording_now(self):
-        """Bat micro chinh thuc."""
+        """Bat micro chinh thuc, co co che Bắt tay (Handshake) voi Whisper Server."""
         self._waiting_for_greeting = False
-        # Guard: neu voice_recorder chua san sang (pyaudio chua cai)
+        
+        # [GUARD 1] Kiem tra cai dat pyaudio
         if not self._voice_recorder:
             logger.warning("[SpotlightWindow] VoiceRecorder chua san sang, khong the ghi am.")
             self._is_recording = False
@@ -847,7 +966,19 @@ class SpotlightWindow(QWidget):
             self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
             self._show_result("Lỗi: Chức năng ghi âm chưa sẵn sàng (thiếu pyaudio).")
             return
-        self.input_box.setPlaceholderText("  Xin chào! Tôi đang nghe... (Bấm Ctrl+Shift+Space lần nữa để gửi)")
+            
+        # [GUARD 2] Handshake ping toi Whisper Server tranh WinError 10053 (Cold Start Latency)
+        from src.ui.voice_engine import WhisperSTT
+        stt = WhisperSTT()
+        if not stt._ping_server(stt._get_server_port()):
+            logger.warning("[SpotlightWindow] Whisper Server chua nap xong model vao RAM.")
+            self._is_recording = False
+            self.input_box.setEnabled(True)
+            self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
+            self._show_result("Hệ thống nhận diện giọng nói đang khởi động (đang nạp AI vào RAM).\nVui lòng chờ thêm vài giây rồi thử lại!")
+            return
+
+        self.input_box.setPlaceholderText("  Xin chào! Tôi đang nghe... (Hệ thống sẽ tự động gửi khi bạn dừng nói)")
         self._voice_recorder.start_recording()
         
     def toggle_voice_recording(self):
@@ -892,7 +1023,6 @@ class SpotlightWindow(QWidget):
                 
             # [FIX-BUG6] Tat loi chao hien tai truoc khi ghi am moi (de an toan)
             if hasattr(self, '_greeting_player') and self._greeting_player:
-                from PyQt6.QtMultimedia import QMediaPlayer
                 if self._greeting_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
                     self._greeting_player.stop()
 

@@ -138,8 +138,34 @@ def process_user_input(
 
         elif intent.intent_type == "os_control":
             payload = intent.os_action_payload
-            app_name = payload.app_name if payload else "unknown"
-            answer = f"Lệnh mở '{app_name}' đã được ghi nhận."
+            app_name = payload.app_name.lower() if payload and payload.app_name else "unknown"
+            
+            # Neu RegexInterceptor bi miss nhung SemanticRouter bat duoc (vi du do sai chinh ta "mỏ" thay vi "mở")
+            # Ta van phai thu thuc thi lenh mo app
+            from src.core.regex_interceptor import _APP_COMMANDS
+            import subprocess
+            
+            command = None
+            for key, cmd in _APP_COMMANDS.items():
+                if key in app_name:
+                    command = cmd
+                    break
+                    
+            if command:
+                try:
+                    action_type, target = command
+                    if action_type == "url":
+                        import os
+                        os.startfile(target)
+                    else:
+                        subprocess.Popen(target, shell=True)
+                        # Khong dung .wait() de hoan toan la Fire-and-Forget
+                    answer = f"Đã mở '{app_name}' cho bạn."
+                except Exception as e:
+                    logger.error("[Coordinator] Lỗi mở app: %s", e)
+                    answer = f"Không thể mở '{app_name}': {e}"
+            else:
+                answer = f"Lệnh mở '{app_name}' đã được ghi nhận nhưng hệ thống chưa biết cách mở app này."
 
         elif intent.intent_type == "export_docx":
             # [C4-FIX] Guard None: topic có thể là None nếu router không nhận diện được
@@ -155,21 +181,9 @@ def process_user_input(
                 answer = f"Lỗi xuất báo cáo: {str(e)[:100]}"
 
         elif intent.intent_type == "daily_task":
-            # Gọi hàm run_consolidation của Consolidator (chạy trong AIWorker thread)
-            try:
-                from src.services.memory_consolidator import MemoryConsolidator
-                # Ta cần tạo 1 instance tạm (nếu không được pass vào) hoặc
-                # tốt nhất là truyền consolidator vào process_user_input.
-                # Tuy nhiên, do process_user_input chưa có consolidator, ta sẽ
-                # thêm tham số consolidator vào functools.partial.
-                if consolidator:
-                    consolidator.run_consolidation(is_catchup=False)
-                    answer = "Đã tổng hợp bộ nhớ ngắn hạn và lưu vào Profile.md thành công!"
-                else:
-                    answer = "Hệ thống tổng hợp bộ nhớ chưa sẵn sàng."
-            except Exception as e:
-                logger.error("[Coordinator] Lỗi tổng hợp bộ nhớ: %s", e)
-                answer = f"Lỗi tổng hợp bộ nhớ: {str(e)[:100]}"
+            # [FIX] daily_task dung de tra loi cac cau hoi thong thuong (thoi gian, thoi tiet, etc)
+            # Khong phai la de trigger MemoryConsolidation (muc do da co cronjob lo)
+            answer = orchestrator.run(user_input=user_input)
 
         else:
             answer = orchestrator.run(user_input=user_input)
@@ -230,6 +244,23 @@ def _cleanup_components(components: dict):
         try:
             components["consolidator"].stop_scheduler()
         except Exception:
+            pass
+
+    # [WHISPER DAEMON] Don dep Microservice
+    if components.get("whisper_server"):
+        try:
+            port_file = os.path.join("temp", ".whisper_port")
+            if os.path.exists(port_file):
+                with open(port_file, "r") as f:
+                    port = int(f.read().strip())
+                import urllib.request
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/shutdown", timeout=1.0)
+        except Exception:
+            pass
+        # Hard kill (Bao hiem Zombie Process)
+        try:
+            components["whisper_server"].terminate()
+        except:
             pass
 
     gc.collect()
@@ -303,8 +334,10 @@ def main():
     else:
         logger.warning("[Main] Bo qua Core AI vi Database khong san sang.")
 
-    # Dang ky SIGTERM handler
-    signal.signal(signal.SIGTERM, create_shutdown_handler(components))
+    # Dang ky SIGTERM va SIGINT (Ctrl+C) handler
+    shutdown_handler = create_shutdown_handler(components)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    signal.signal(signal.SIGINT, shutdown_handler)
 
     # -- Buoc 4: Khoi chay Spotlight UI (PyQt6) --
     logger.info("[Main] [4/4] Dang khoi tao Spotlight UI (PyQt6)...")
@@ -320,6 +353,15 @@ def main():
         app = QApplication(sys.argv)
         app.setQuitOnLastWindowClosed(False)
         app.setApplicationName("Digital Scholar")
+
+        # Khoi dong ngam Whisper Server (Daemon Microservice)
+        import subprocess
+        try:
+            whisper_proc = subprocess.Popen([sys.executable, "src/api/whisper_server.py"])
+            components["whisper_server"] = whisper_proc
+            logger.info(f"[Main] Khoi dong ngam Whisper Server (PID: {whisper_proc.pid})")
+        except Exception as e:
+            logger.error(f"[Main] Khong the khoi dong Whisper Server: {e}")
 
         # Dong goi process_fn de Spotlight goi khong can biet tham so
         if router is not None and memory is not None and orchestrator is not None:
@@ -374,6 +416,12 @@ def main():
         if consolidator:
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(2000, lambda: consolidator.check_and_catchup())
+
+        # [FIX] QTimer dummy de PyQt6 nhuong CPU cho Python bat tin hieu Ctrl+C tu terminal
+        from PyQt6.QtCore import QTimer
+        dummy_timer = QTimer()
+        dummy_timer.timeout.connect(lambda: None)
+        dummy_timer.start(500)
 
         # Chay Qt Event Loop (thay the while True: time.sleep(1) cua Giai doan 3)
         exit_code = app.exec()
