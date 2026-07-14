@@ -5,7 +5,7 @@ pyaudio
 edge-tts
 pyperclip
 win11toast
-openai-whisper
+faster-whisper
 torch
 
 # ─── Tầng AI, LLM & Router ───────────────────────────────────────────────────
