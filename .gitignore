@@ -33,3 +33,11 @@ Obsidian_Vault/03_Agent_Memory/*
 .consolidation_state
 README.docx
 test.mp3
+
+# Customization Rules & Scratchpads
+ARCHITECTURE_RULES.md
+.code_issues.md
+
+# Temp dirs
+test_qdrant/
+temp/
