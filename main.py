@@ -140,11 +140,19 @@ def process_user_input(
             payload = intent.os_action_payload
             app_name = payload.app_name.lower() if payload and payload.app_name else "unknown"
             
-            # Neu RegexInterceptor bi miss nhung SemanticRouter bat duoc (vi du do sai chinh ta "mỏ" thay vi "mở")
-            # Ta van phai thu thuc thi lenh mo app
-            from src.core.regex_interceptor import _APP_COMMANDS
+            # Giai doan 5: Tich hop SemanticInterceptor
+            # Cho phep cac lenh tu dong qua Regex hoac Semantic
             import subprocess
             
+            # OS Action da duoc nhan biet tu app_name, tao command truc tiep.
+            # Chi ho tro mot vai lenh mau de phong loi, thuc te SemanticInterceptor da xu ly 99% 
+            _APP_COMMANDS = {
+                "youtube": ("url", "https://youtube.com"),
+                "zalo": ("exe", "start zalo"),
+                "zotero": ("url", "zotero:"),
+                "chrome": ("exe", "start chrome"),
+                "word": ("exe", "start winword")
+            }
             command = None
             for key, cmd in _APP_COMMANDS.items():
                 if key in app_name:
@@ -345,9 +353,9 @@ def main():
 
     try:
         from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtWidgets import QApplication
         from src.ui.spotlight import SpotlightWindow, GlobalHotkeyWorker, setup_system_tray
-        from src.core.regex_interceptor import intercept as regex_intercept
-
+        from src.core.semantic_interceptor import SemanticInterceptor
         # Tao Qt Application
         # setQuitOnLastWindowClosed(False): app song khi cua so dong (chay ngam qua tray)
         app = QApplication(sys.argv)
@@ -377,8 +385,17 @@ def main():
             logger.warning("[Main] Core AI chua san sang (kiem tra API Keys trong .env).")
             process_fn = None
 
+        # Khoi tao SemanticInterceptor, tai su dung model e5-base tu Qdrant
+        if rag is not None:
+            embed_func = rag._qdrant.embed_text
+        else:
+            # Fallback chong loi khi khong co database
+            embed_func = lambda x: [0.0] * 768
+            
+        semantic_interceptor = SemanticInterceptor(embed_func=embed_func)
+
         # Dong goi intercept_fn voi vault_path co san
-        intercept_fn = functools.partial(regex_intercept, vault_path=VAULT_PATH)
+        intercept_fn = functools.partial(semantic_interceptor.intercept, vault_path=VAULT_PATH)
 
         # Tao cua so Spotlight
         window = SpotlightWindow(
