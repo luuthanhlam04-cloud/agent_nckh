@@ -107,53 +107,57 @@ print("=" * 60)
 print("  TEST 3: RegexInterceptor - All 7 modules")
 print("=" * 60)
 try:
-    from src.core.regex_interceptor import (
-        intercept, filter_whisper_hallucination,
-        check_time_queries, check_os_commands,
-        force_web_search_override, trigger_docx_export,
-    )
+    from src.core.semantic_interceptor import SemanticInterceptor
+    from src.db.hybrid_rag import QdrantManager
+    
+    qdrant = QdrantManager()
+    interceptor = SemanticInterceptor(embed_func=qdrant.embed_text)
+    
+    import time
+    while not interceptor._is_ready:
+        time.sleep(0.1)
 
     # BUG-7: Whisper -> (None, None)
-    r, m = intercept("Cảm ơn các bạn đã xem video")
+    r, m = interceptor.intercept("Cảm ơn các bạn đã xem video")
     check("BUG-7: Whisper hallucination -> (None,None)", r is None and m is None, f"got ({r!r},{m!r})")
 
     # Empty input
-    r, m = intercept("")
+    r, m = interceptor.intercept("")
     check("Empty input -> (None, None)", r is None and m is None)
 
     # Time query với tiếng Việt đúng
-    r, m = intercept("mấy giờ rồi")
+    r, m = interceptor.intercept("mấy giờ rồi")
     check("Time query -> fast mode", m == "fast", f"got mode={m!r}")
     check("Time query has colon (HH:MM)", r is not None and ":" in str(r))
 
     # Date query
-    r, m = intercept("hôm nay là ngày bao nhiêu")
+    r, m = interceptor.intercept("hôm nay là ngày bao nhiêu")
     check("Date query -> fast mode", m == "fast")
     check("Date query has slash (dd/mm/yyyy)", r is not None and "/" in str(r))
 
     # OS command
-    r, m = intercept("mở youtube đi")
+    r, m = interceptor.intercept("mở youtube đi")
     check("OS command (youtube) -> ninja", m == "ninja", f"got ({r!r},{m!r})")
 
-    r2, m2 = intercept("hãy mở VS Code")
+    r2, m2 = interceptor.intercept("hãy mở VS Code")
     check("OS command (vscode) -> ninja", m2 == "ninja")
 
     # Force web search override
-    r, m = intercept("tra mạng bắt buộc GraphRAG là gì")
+    r, m = interceptor.intercept("tra mạng bắt buộc GraphRAG là gì")
     check("Force web search -> fast dict", m == "fast" and isinstance(r, dict))
     check("Force web intent=FORCE_WEB", r is not None and r.get("intent") == "FORCE_WEB")
 
     # Docx export
-    r, m = intercept("xuất ra word báo cáo về GraphRAG")
+    r, m = interceptor.intercept("xuất ra word báo cáo về GraphRAG")
     check("Docx export -> fast dict", m == "fast" and isinstance(r, dict))
     check("Docx export intent=EXPORT_DOCX", r is not None and r.get("intent") == "EXPORT_DOCX")
 
     # No match -> push to LLM
-    r, m = intercept("GraphRAG là gì và cách hoạt động")
+    r, m = interceptor.intercept("GraphRAG là gì và cách hoạt động")
     check("Research query -> (None, None) -> LLM", r is None and m is None)
 
     # Ninja UX: no last_response
-    r, m = intercept("copy câu vừa rồi")
+    r, m = interceptor.intercept("copy câu vừa rồi")
     check("Copy with no last_response -> fast", m == "fast")
 
 except Exception as e:
