@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Tai model Whisper tu .env
 from dotenv import load_dotenv
 load_dotenv()
-MODEL_NAME = os.getenv("WHISPER_MODEL", "turbo")
+MODEL_NAME = os.getenv("WHISPER_MODEL", "vudang449/PhoWhisper-small-ct2")
 
 # ==============================================================================
 # WHISPER ENGINE (LOAD 1 LAN)

@@ -92,7 +92,7 @@ class DocxExporter:
             )
             sources = []
         except Exception as e:
-            logger.error("[DocxExporter] Loi RAG: %s", e)
+            logger.error("[DocxExporter] Loi RAG: %s", e, exc_info=True)
             return "", f"Loi truy xuat tri thuc: {str(e)[:80]}"
 
         # ── Buoc 2: Xay dung file Word ───────────────────────────────────────
@@ -213,7 +213,7 @@ class DocxExporter:
             )
             return None
         except Exception as e:
-            logger.error("[DocxExporter] Loi tao docx: %s", e)
+            logger.error("[DocxExporter] Loi tao docx: %s", e, exc_info=True)
             return None
 
     def _add_content_paragraphs(self, doc, content: str):

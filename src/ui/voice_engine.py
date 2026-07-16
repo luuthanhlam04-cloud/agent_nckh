@@ -265,7 +265,7 @@ class WhisperSTT:
             logger.info(f"[WhisperSTT Client] Ket qua (%.1fs): '%s'", time.time() - start_t, text)
             return text
         except urllib.error.URLError as e:
-            logger.error("[WhisperSTT Client] Khong the ket noi toi server: %s", e)
+            logger.error("[WhisperSTT Client] Khong the ket noi toi server: %s", e, exc_info=True)
             return f"Lỗi: Không thể kết nối máy chủ nhận diện giọng nói (Port {port})."
         except Exception as e:
             logger.error("[WhisperSTT Client] Loi giai ma: %s", e, exc_info=True)

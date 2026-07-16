@@ -557,7 +557,7 @@ class HybridRAG:
                     r["source_method"] = "graph"
         except (ValueError, Exception) as e:
             # ValueError: NEO4J_URI trống. Exception: mất kết nối mạng/timeout.
-            logger.warning("[HybridRAG] Neo4j không khả dụng, chỉ dùng vector search: %s", e)
+            logger.warning("[HybridRAG] Neo4j không khả dụng, chỉ dùng vector search: %s", e, exc_info=True)
 
         for r in vector_results:
             r["source_method"] = "vector"
