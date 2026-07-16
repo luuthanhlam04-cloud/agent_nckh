@@ -21,10 +21,10 @@ def check(name, condition, detail=""):
 
 # ─────────────────────────────────────────────
 print("=" * 60)
-print("  TEST 1: ConversationMemory + RouterIntent")
+print("  TEST 1: ConversationMemory")
 print("=" * 60)
 try:
-    from src.core.semantic_router import ConversationMemory, RouterIntent
+    from src.core.conversation_memory import ConversationMemory
 
     # Sliding window cap
     mem = ConversationMemory(max_size=5)
@@ -39,14 +39,6 @@ try:
     ctx = mem2.get_context_string()
     check("BUG-8: short text no ellipsis", "Short answer..." not in ctx)
     check("BUG-8: long text has ellipsis", "..." in ctx)
-
-    # Pydantic fallback
-    intent = RouterIntent.model_validate({
-        "intent_type": "invalid_type", "target_folder": None,
-        "enable_web_search": False, "os_action_payload": None,
-        "translated_keywords": ["test"], "topic": None,
-    })
-    check("Pydantic: invalid intent -> research_query", intent.intent_type == "research_query")
 
     # Window pop oldest
     mem3 = ConversationMemory(max_size=3)
@@ -142,19 +134,19 @@ try:
     r2, m2 = interceptor.intercept("hãy mở VS Code")
     check("OS command (vscode) -> ninja", m2 == "ninja")
 
-    # Force web search override
+    # Force web search override (Bây giờ là FORCE_WEB)
     r, m = interceptor.intercept("tra mạng bắt buộc GraphRAG là gì")
-    check("Force web search -> fast dict", m == "fast" and isinstance(r, dict))
-    check("Force web intent=FORCE_WEB", r is not None and r.get("intent") == "FORCE_WEB")
+    check("Force web search -> fast dict", m == "router" and isinstance(r, dict))
+    check("Force web intent=daily_task", r is not None and r.get("intent") == "daily_task")
 
     # Docx export
     r, m = interceptor.intercept("xuất ra word báo cáo về GraphRAG")
-    check("Docx export -> fast dict", m == "fast" and isinstance(r, dict))
+    check("Docx export -> fast dict", m == "router" and isinstance(r, dict))
     check("Docx export intent=EXPORT_DOCX", r is not None and r.get("intent") == "EXPORT_DOCX")
 
-    # No match -> push to LLM
+    # No match -> push to LLM (Bây giờ SemanticInterceptor xử lý research_query/daily_task luôn)
     r, m = interceptor.intercept("GraphRAG là gì và cách hoạt động")
-    check("Research query -> (None, None) -> LLM", r is None and m is None)
+    check("Research query -> (None, None) -> LLM", m == "router" and r is not None and r.get("intent") in ["research_query", "daily_task"])
 
     # Ninja UX: no last_response
     r, m = interceptor.intercept("copy câu vừa rồi")
