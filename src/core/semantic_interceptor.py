@@ -45,17 +45,25 @@ _ANCHORS_MAP = {
         "mở bài hát lên"
     ],
     "OS_ZALO": ["mở zalo", "vào ứng dụng zalo", "khởi động zalo"],
-    "OS_WORD": ["mở word", "vào ms word", "khởi động microsoft word", "mở phần mềm soạn thảo"],
-    "OS_CHROME": ["mở chrome", "vào trình duyệt chrome", "khởi động google chrome"],
-    "OS_VSCODE": ["mở vscode", "vào visual studio code", "bật vs code", "mở trình gõ code"],
-    "OS_ZOTERO": ["mở zotero", "khởi chạy phần mềm zotero", "vào phần mềm quản lý tài liệu"],
+    "OS_APP": [
+        "mở ứng dụng", "bật phần mềm", "khởi động ứng dụng", 
+        "mở app", "khởi chạy phần mềm", "mở word", "mở excel", 
+        "mở chrome", "mở notepad", "mở vscode"
+    ],
     "OS_EXPLORER": ["mở thư mục", "mở file explorer", "vào thư mục hiện tại"],
+    "OS_WEBSITE": [
+        "mở trang web", "vào website", "truy cập trang", "vào mạng",
+        "mở facebook", "vào trang facebook", "truy cập vnexpress",
+        "mở trang google docs", "vào dantri", "mở github"
+    ],
     "OBSIDIAN_SAVE": [
         "lưu vào ghi chú", 
         "nhớ nội dung này lại", 
         "ghi vào sổ tay", 
         "lưu thông tin này vào não",
-        "hãy ghi nhớ rằng"
+        "hãy ghi nhớ rằng",
+        "lưu câu bạn vừa nói",
+        "ghi nhớ thông tin vừa rồi"
     ],
     "FORCE_WEB": [
         "tìm trên mạng", 
@@ -72,7 +80,12 @@ _ANCHORS_MAP = {
     ],
     "NINJA_COPY": ["copy lại câu trả lời", "sao chép câu vừa rồi", "sao chép lại text"],
     "NINJA_TOAST": ["hiện chữ lên", "bật thông báo text", "hiện text lên màn hình"],
-    "NINJA_REPEAT": ["nói lại đi", "đọc lại xem nào", "nhắc lại câu vừa rồi", "nghe chưa rõ đọc lại đi"]
+    "NINJA_REPEAT": ["nói lại đi", "đọc lại xem nào", "nhắc lại câu vừa rồi", "nghe chưa rõ đọc lại đi"],
+    "SMALL_TALK": [
+        "thời tiết hôm nay", "hôm nay thế nào", "tỷ giá usd", 
+        "giá vàng", "bạn thấy sao", "tóm tắt nhanh tin tức",
+        "dịch câu này", "kể chuyện cười"
+    ]
 }
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
@@ -142,16 +155,20 @@ class SemanticInterceptor:
 
         # 3. Ra quyết định dựa trên Threshold
         if best_score < THRESHOLD:
-            return None, None  # Nhường lệnh cho LLM RAG xử lý
+            # Fallback mặc định là research_query
+            return {"intent": "research_query", "query": text}, "router"
             
         return self._execute_intent(best_intent, text, vault_path, last_response)
 
-    def _extract_payload(self, text: str, stop_words: List[str]) -> str:
-        """Hàm rút gọn payload thông minh."""
-        lower_text = text.lower()
-        for word in stop_words:
-            lower_text = lower_text.replace(word, " ")
-        return re.sub(r'\s+', ' ', lower_text).strip()
+    def _extract_payload(self, text: str, start_words: List[str]) -> str:
+        """Hàm rút gọn payload thông minh dùng Regex để cắt từ khóa ở ĐẦU câu."""
+        lower_text = text.lower().strip()
+        # Tạo pattern từ danh sách từ khóa, ví dụ: ^(hãy|bạn hãy|mở|tìm|cho nghe)\s+
+        pattern = r"^(?:bạn hãy|hãy|bạn|làm ơn)?\s*(?:" + "|".join(start_words) + r")\s*(?:rằng|là|nội dung|:)?\s*(.*)"
+        match = re.search(pattern, lower_text, re.IGNORECASE)
+        if match and match.group(1).strip():
+            return match.group(1).strip()
+        return text.strip()
 
     def _execute_intent(self, intent: str, text: str, vault_path: str, last_response: str) -> Tuple[Optional[Any], Optional[str]]:
         now = datetime.now()
@@ -173,25 +190,24 @@ class SemanticInterceptor:
             self._play_youtube_async(payload)
             return f"Đang tìm và phát trên Youtube: {payload}", "ninja"
             
+        elif intent == "OS_WEBSITE":
+            domain = self._extract_payload(text, ["mở trang web", "vào trang web", "truy cập website", "truy cập trang", "vào trang", "vào mạng", "mở trang", "vào", "mở", "truy cập", "lướt"])
+            if not domain: domain = text
+            # Sử dụng DuckDuckGo "I'm Feeling Lucky" (!ducky) để tự động chuyển hướng đến trang đích
+            ducky_url = f"https://duckduckgo.com/?q=!ducky+{urllib.parse.quote(domain)}"
+            os.startfile(ducky_url)
+            return f"Đã mở trang web: {domain}", "ninja"
+            
         elif intent == "OS_ZALO":
-            subprocess.Popen("start zalo", shell=True)
+            os.startfile("zalo:")
             return "Đã mở Zalo.", "ninja"
             
-        elif intent == "OS_WORD":
-            subprocess.Popen("start winword", shell=True)
-            return "Đã khởi động Microsoft Word.", "ninja"
-            
-        elif intent == "OS_CHROME":
-            subprocess.Popen("start chrome", shell=True)
-            return "Đã mở trình duyệt Chrome.", "ninja"
-            
-        elif intent == "OS_VSCODE":
-            subprocess.Popen("code .", shell=True)
-            return "Đã mở Visual Studio Code.", "ninja"
-            
-        elif intent == "OS_ZOTERO":
-            os.startfile("zotero:")
-            return "Đã mở Zotero.", "ninja"
+        elif intent == "OS_APP":
+            app = self._extract_payload(text, ["mở ứng dụng", "khởi động phần mềm", "khởi động ứng dụng", "bật phần mềm", "khởi chạy phần mềm", "mở app", "bật app", "mở", "bật", "khởi động", "khởi chạy"])
+            if not app: app = text
+            # Dùng lệnh start của Windows để mở các app có trong PATH (notepad, winword, chrome...)
+            subprocess.Popen(f"start {app}", shell=True)
+            return f"Đã gửi lệnh khởi chạy ứng dụng: {app}", "ninja"
             
         elif intent == "OS_EXPLORER":
             subprocess.Popen("explorer .", shell=True)
@@ -199,8 +215,13 @@ class SemanticInterceptor:
 
         elif intent == "OBSIDIAN_SAVE":
             if not vault_path: return "Lỗi: Không tìm thấy đường dẫn Vault.", "ninja"
-            payload = self._extract_payload(text, ["hãy", "lưu", "nhớ", "ghi nhớ", "ghi chú", "thông tin này", "sổ tay", "não", "rằng"])
-            if not payload: payload = text
+            
+            # Xử lý trường hợp sếp bảo "lưu câu bạn vừa nói"
+            if "bạn vừa nói" in text.lower() or "thông tin vừa rồi" in text.lower() or "câu vừa rồi" in text.lower():
+                payload = last_response if last_response else "Không có câu trả lời nào trước đó để lưu."
+            else:
+                payload = self._extract_payload(text, ["lưu vào ghi chú", "nhớ nội dung này", "ghi vào sổ tay", "lưu thông tin", "ghi nhớ", "lưu", "nhớ"])
+                if not payload: payload = text
             
             memory_file = os.path.join(vault_path, OBSIDIAN_MEMORY_FILE)
             try:
@@ -215,12 +236,15 @@ class SemanticInterceptor:
         elif intent == "FORCE_WEB":
             payload = self._extract_payload(text, ["hãy", "tìm trên mạng", "tra google", "bỏ qua rag", "tra cứu", "internet", "thử xem", "tìm kiếm"])
             if not payload: payload = text
-            return {"intent": "FORCE_WEB", "query": payload}, "fast"
+            return {"intent": "daily_task", "query": payload}, "router"
+
+        elif intent == "SMALL_TALK":
+            return {"intent": "daily_task", "query": text}, "router"
 
         elif intent == "EXPORT_DOCX":
             payload = self._extract_payload(text, ["hãy", "xuất", "báo cáo", "word", "docx", "tạo file", "lưu thành", "tổng hợp"])
             if not payload: payload = "Báo cáo chung"
-            return {"intent": "EXPORT_DOCX", "topic": payload}, "fast"
+            return {"intent": "EXPORT_DOCX", "topic": payload, "query": text}, "router"
 
         elif intent == "NINJA_COPY":
             if last_response:

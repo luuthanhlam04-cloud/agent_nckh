@@ -25,6 +25,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Fix loi Unicode khi in tieng Viet ra terminal (Windows)
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 # --- Cau hinh Logging toan cuc ---
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +43,9 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("Main")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)  # Suppress missing property warnings
 
 # --- Tai bien moi truong ---
 load_dotenv()
@@ -91,122 +101,79 @@ def init_watcher(hybrid_rag):
 
 def init_core_ai(hybrid_rag):
     """
-    Khoi tao cac thanh phan AI loi (Giai doan 3).
-    Tra ve tuple (router, memory, orchestrator).
+    Khoi tao cac thanh phan AI loi.
+    Tra ve tuple (memory, orchestrator).
     """
-    from src.core.semantic_router import SemanticRouter, ConversationMemory
+    from src.core.conversation_memory import ConversationMemory
     from src.core.orchestrator import ReActOrchestrator
 
-    router = SemanticRouter()
     memory = ConversationMemory()
     orchestrator = ReActOrchestrator(hybrid_rag=hybrid_rag)
 
-    logger.info("[Main] SemanticRouter + ReActOrchestrator da san sang.")
-    return router, memory, orchestrator
+    logger.info("[Main] ConversationMemory + ReActOrchestrator da san sang.")
+    return memory, orchestrator
 
 
 # ==============================================================================
 #  Coordinator - Diem noi giua Router va Orchestrator (Giu nguyen tu Giai doan 3)
 # ==============================================================================
 
+from typing import Any
+
 def process_user_input(
-    user_input: str,
-    router,
+    user_input: Any,
     memory,
     orchestrator,
     consolidator=None,
-) -> str:
+):
     """
     Coordinator trung tam ket noi toan bo luong xu ly cau hoi.
-
-    Luong dieu phoi:
-      user_input
-        -> SemanticRouter.route()  -> Phan loai intent
-        -> [research_query]        -> ReActOrchestrator.run()
-        -> [os_control]            -> Da xu ly truoc boi RegexInterceptor
-        -> [export_docx]           -> Placeholder (Giai doan 5)
-        -> [daily_task]            -> Placeholder (Giai doan 5)
-        -> memory.add(Q, A)        -> Cap nhat Sliding Window
-        -> return answer
+    Giai doan 5.5: Dynamic Routing (Bypass SemanticRouter cu)
     """
     try:
-        intent = router.route(user_input=user_input, memory=memory)
-        logger.info(f"[Coordinator] Intent: {intent.intent_type}")
+        if isinstance(user_input, dict):
+            intent_type = user_input.get("intent", "research_query")
+            query = user_input.get("query", "")
+            topic = user_input.get("topic", "")
+        else:
+            intent_type = "research_query"
+            query = str(user_input)
+            topic = ""
 
-        if intent.intent_type == "research_query":
-            answer = orchestrator.run(user_input=user_input)
+        logger.info(f"[Coordinator] Intent (Dynamic): {intent_type}")
 
-        elif intent.intent_type == "os_control":
-            payload = intent.os_action_payload
-            app_name = payload.app_name.lower() if payload and payload.app_name else "unknown"
-            
-            # Giai doan 5: Tich hop SemanticInterceptor
-            # Cho phep cac lenh tu dong qua Regex hoac Semantic
-            import subprocess
-            
-            # OS Action da duoc nhan biet tu app_name, tao command truc tiep.
-            # Chi ho tro mot vai lenh mau de phong loi, thuc te SemanticInterceptor da xu ly 99% 
-            _APP_COMMANDS = {
-                "youtube": ("url", "https://youtube.com"),
-                "zalo": ("exe", "start zalo"),
-                "zotero": ("url", "zotero:"),
-                "chrome": ("exe", "start chrome"),
-                "word": ("exe", "start winword")
-            }
-            command = None
-            for key, cmd in _APP_COMMANDS.items():
-                if key in app_name:
-                    command = cmd
-                    break
-                    
-            if command:
-                try:
-                    action_type, target = command
-                    if action_type == "url":
-                        import os
-                        os.startfile(target)
-                    else:
-                        subprocess.Popen(target, shell=True)
-                        # Khong dung .wait() de hoan toan la Fire-and-Forget
-                    answer = f"Đã mở '{app_name}' cho bạn."
-                except Exception as e:
-                    logger.error("[Coordinator] Lỗi mở app: %s", e)
-                    answer = f"Không thể mở '{app_name}': {e}"
-            else:
-                answer = f"Lệnh mở '{app_name}' đã được ghi nhận nhưng hệ thống chưa biết cách mở app này."
-
-        elif intent.intent_type == "export_docx":
-            # [C4-FIX] Guard None: topic có thể là None nếu router không nhận diện được
-            topic = intent.topic or "không xác định"
+        if intent_type == "EXPORT_DOCX":
+            topic_str = topic or query
             try:
                 from src.services.docx_exporter import DocxExporter
                 exporter = DocxExporter(orchestrator=orchestrator)
-                _path, answer = exporter.export(topic=topic)
+                _path, answer = exporter.export(topic=topic_str)
+                yield answer
             except ImportError:
-                answer = f"Xuất báo cáo về '{topic}': thiếu thư viện python-docx. Chạy: pip install python-docx"
+                yield f"Xuất báo cáo về '{topic_str}': thiếu thư viện python-docx. Chạy: pip install python-docx"
             except Exception as e:
-                logger.error("[Coordinator] Lỗi DocxExporter: %s", e)
-                answer = f"Lỗi xuất báo cáo: {str(e)[:100]}"
-
-        elif intent.intent_type == "daily_task":
-            # [FIX] daily_task dung de tra loi cac cau hoi thong thuong (thoi gian, thoi tiet, etc)
-            # Khong phai la de trigger MemoryConsolidation (muc do da co cronjob lo)
-            answer = orchestrator.run(user_input=user_input)
-
+                logger.error("[Coordinator] Lỗi DocxExporter: %s", e, exc_info=True)
+                yield f"Lỗi xuất báo cáo: {str(e)[:100]}"
+                
         else:
-            answer = orchestrator.run(user_input=user_input)
-
-        memory.add(user_input=user_input, agent_response=answer)
-        return answer
+            # intent_type sẽ là "daily_task" hoặc "research_query"
+            gen = orchestrator.run(user_input=query, intent=intent_type)
+            full_answer = ""
+            if isinstance(gen, str):
+                 full_answer = gen
+                 yield gen
+            else:
+                 for chunk in gen:
+                      if chunk:
+                          full_answer += chunk
+                          yield chunk
+            
+            if full_answer:
+                memory.add(user_input=query, agent_response=full_answer)
 
     except Exception as e:
-        error_msg = f"He thong gap su co: {str(e)[:100]}"
-        logger.error(f"[Coordinator] Loi: {e}")
-        try:
-            memory.add(user_input=user_input, agent_response=error_msg)
-        except Exception:
-            pass
-        return error_msg
+        logger.error(f"[Coordinator] Lỗi xử lý: {e}", exc_info=True)
+        yield f"Lỗi hệ thống: {str(e)}"
 
 
 # ==============================================================================
@@ -219,7 +186,8 @@ def _cleanup_components(components: dict):
     if components.get("hotkey_thread"):
         try:
             components["hotkey_thread"].stop_listening()
-            components["hotkey_thread"].wait(500)
+            if not components["hotkey_thread"].wait(3000):
+                components["hotkey_thread"].terminate()
         except Exception:
             pass
 
@@ -317,12 +285,11 @@ def main():
 
     # -- Buoc 3: Khoi tao Core AI --
     logger.info("[Main] [3/4] Dang khoi tao Core AI...")
-    router = memory = orchestrator = None
+    memory = orchestrator = None
     # [B9-FIX] Chi khoi tao Core AI neu rag khong phai None
     if rag is not None:
         try:
-            router, memory, orchestrator = init_core_ai(rag)
-            components["router"]       = router
+            memory, orchestrator = init_core_ai(rag)
             components["memory"]       = memory
             components["orchestrator"] = orchestrator
             
@@ -372,10 +339,9 @@ def main():
             logger.error(f"[Main] Khong the khoi dong Whisper Server: {e}")
 
         # Dong goi process_fn de Spotlight goi khong can biet tham so
-        if router is not None and memory is not None and orchestrator is not None:
+        if memory is not None and orchestrator is not None:
             process_fn = functools.partial(
                 process_user_input,
-                router=router,
                 memory=memory,
                 orchestrator=orchestrator,
                 consolidator=components.get("consolidator"),
@@ -387,7 +353,7 @@ def main():
 
         # Khoi tao SemanticInterceptor, tai su dung model e5-base tu Qdrant
         if rag is not None:
-            embed_func = rag._qdrant.embed_text
+            embed_func = rag.qdrant.embed_text
         else:
             # Fallback chong loi khi khong co database
             embed_func = lambda x: [0.0] * 768

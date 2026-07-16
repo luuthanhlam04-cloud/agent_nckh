@@ -35,7 +35,10 @@ from dotenv import load_dotenv
 
 # Web search
 try:
-    from duckduckgo_search import DDGS
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        from duckduckgo_search import DDGS
     DDGS_AVAILABLE = True
 except ImportError:
     DDGS_AVAILABLE = False
@@ -176,10 +179,13 @@ class WorkerEngine:
                 ],
                 temperature=temperature,
                 max_tokens=max_tokens,
+                stream=True,
             )
-            answer = response.choices[0].message.content or ""
-            logger.info(f"[WorkerEngine] Nhận phản hồi: {len(answer)} ký tự.")
-            return answer
+            for chunk in response:
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        yield delta
 
         except Exception as e:
             # Bắt lỗi Safety Filter của Google (FinishReason.SAFETY - Bước 7.2 spec)
@@ -399,7 +405,7 @@ class ReActOrchestrator:
             )
             return {**state, "context_chunks": context_chunks}
         except Exception as e:
-            logger.error("[ReAct:RETRIEVE] Lỗi truy xuất RAG: %s", e)
+            logger.error("[ReAct:RETRIEVE] Lỗi truy xuất RAG: %s", e, exc_info=True)
             return {**state, "context_chunks": [], "error": str(e)}
 
     # ── Node 2: Chấm điểm ngữ cảnh (Self-Critique) ───────────────────────────
@@ -515,11 +521,12 @@ CÂU HỎI:
 Trả lời bằng tiếng Việt học thuật:"""
 
         try:
-            answer = self._worker.generate(
+            # Sửa đổi: Hàm generate trả về Generator
+            gen = self._worker.generate(
                 system_prompt=_ANSWER_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
             )
-            return {**state, "final_answer": answer}
+            return gen
         except Exception as e:
             logger.error(f"[ReAct:GENERATE] Lỗi WorkerEngine: {e}")
             return {
@@ -543,17 +550,58 @@ Trả lời bằng tiếng Việt học thuật:"""
         self,
         user_input: str,
         additional_context: Optional[List[Dict]] = None,
-    ) -> str:
+        intent: str = "research_query"
+    ):
         """
         Chạy toàn bộ luồng ReAct cho một câu hỏi của người dùng.
-
-        Args:
-            user_input         : Câu hỏi của người dùng.
-            additional_context : Context bổ sung (ví dụ: kết quả từ Regex interceptor).
-
-        Returns:
-            Chuỗi câu trả lời cuối cùng bằng tiếng Việt.
+        Giai doan 5.5: Bổ sung intent để chọn luồng.
         """
+        if intent == "daily_task":
+            logger.info("[ReActOrchestrator] === Bắt đầu Fast-Track (daily_task) ===")
+            import concurrent.futures
+            
+            def _get_rag():
+                try:
+                    if self.hybrid_rag:
+                        chunks = self.hybrid_rag.search(user_input, top_k=3)
+                        return "\n\n".join([f"Trích xuất {i+1}:\n{c['text']}" for i, c in enumerate(chunks)])
+                except Exception as e:
+                    logger.error(f"[FastTrack] Lỗi RAG: {e}")
+                return ""
+                
+            def _get_web():
+                try:
+                    if DDGS_AVAILABLE:
+                        # DDGS needs to be used without max_results if it errors, but max_results is fine usually
+                        results = DDGS().text(user_input, max_results=3)
+                        return "\n".join([f"- {r['title']}: {r['body']}" for r in results])
+                except Exception as e:
+                    logger.error(f"[FastTrack] Lỗi Web: {e}")
+                return ""
+
+            rag_text = ""
+            web_text = ""
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                rag_future = executor.submit(_get_rag)
+                web_future = executor.submit(_get_web)
+                rag_text = rag_future.result()
+                web_text = web_future.result()
+
+            context_combined = ""
+            if rag_text: context_combined += f"=== Tài liệu nội bộ ===\n{rag_text}\n\n"
+            if web_text: context_combined += f"=== Tìm kiếm Web ===\n{web_text}\n\n"
+            if not context_combined: context_combined = "(Không tìm thấy ngữ cảnh bổ sung.)"
+
+            user_prompt = f"NGỮ CẢNH:\n{context_combined}\nCÂU HỎI:\n{user_input}\nTrả lời ngắn gọn bằng tiếng Việt:"
+            gen = self._worker.generate(
+                system_prompt="Bạn là trợ lý ảo. Trả lời nhanh gọn, trực tiếp vào trọng tâm.",
+                user_prompt=user_prompt
+            )
+            for chunk in gen:
+                yield chunk
+            return
+
+        # Deep-Track (research_query)
         # Khởi tạo trạng thái ban đầu
         state: AgentState = {
             "user_input": user_input,
@@ -595,15 +643,21 @@ Trả lời bằng tiếng Việt học thuật:"""
             # Critique lai voi context moi
             state = self._node_critique(state)
 
-        # ── Bước 3: Sinh câu trả lời ─────────────────────────────────────────
-        state = self._node_generate(state)
-
+        # Bước 3: Generate
+        gen = self._node_generate(state)
+        
+        # Nếu _node_generate trả về Exception dict thay vì generator
+        if isinstance(gen, dict) and "error" in gen:
+            yield gen["final_answer"]
+        else:
+            for chunk in gen:
+                yield chunk
+        
         logger.info(
             f"[ReActOrchestrator] === Hoàn thành. "
             f"Search loops={state['search_iterations']} | "
             f"Answer length={len(state['final_answer'])} chars ==="
         )
-        return state["final_answer"]
 
     def get_last_sources(self) -> list:
         """

@@ -110,10 +110,12 @@ class AIWorker(QThread):
     Giao tiep voi Main Thread ONLY qua pyqtSignal.
     KHONG duoc dong vao bat ky widget Qt nao trong run().
     """
-    sig_finished = pyqtSignal(str)   # Phat ket qua ve Main Thread
+    sig_chunk = pyqtSignal(str)      # Delta text de danh may hien thi tren UI
+    sig_sentence = pyqtSignal(str)   # Cau hoan chinh de day vao TTSWorker
+    sig_finished = pyqtSignal(str)   # Phat ket qua tong ve Main Thread
     sig_error    = pyqtSignal(str)   # Phat thong bao loi
 
-    def __init__(self, user_input: str, process_fn: Callable, parent=None):
+    def __init__(self, user_input: Any, process_fn: Callable, parent=None):
         super().__init__(parent)
         self._user_input = user_input
         self._process_fn = process_fn
@@ -121,11 +123,44 @@ class AIWorker(QThread):
     def run(self):
         """Chay trong Worker Thread. Khong goi widget method o day."""
         try:
-            logger.info("[AIWorker] Bat dau xu ly: '%s'", self._user_input[:60])
-            answer = self._process_fn(self._user_input)
-            logger.info("[AIWorker] Hoan thanh. Do dai: %d ky tu.", len(answer))
+            input_log = str(self._user_input)[:60]
+            logger.info("[AIWorker] Bat dau xu ly: '%s'", input_log)
+            gen = self._process_fn(self._user_input)
+            
+            full_text = ""
+            sentence_buffer = ""
+            import re
+            
+            for chunk in gen:
+                if not self.isRunning():
+                    break
+                if chunk:
+                    full_text += chunk
+                    sentence_buffer += chunk
+                    try:
+                        self.sig_chunk.emit(chunk)
+                    except RuntimeError:
+                        break
+                        
+                    # Kiem tra ket thuc cau (dau cham, cham hoi, cham than theo sau boi khoang trang hoac xuong dong)
+                    if re.search(r'[.?!](?:\s+|\n+|$)', sentence_buffer):
+                        if len(sentence_buffer.strip()) > 10:
+                            try:
+                                self.sig_sentence.emit(sentence_buffer.strip())
+                            except RuntimeError:
+                                break
+                            sentence_buffer = ""
+            
+            # Day not phan con lai trong buffer
+            if sentence_buffer.strip():
+                try:
+                    self.sig_sentence.emit(sentence_buffer.strip())
+                except RuntimeError:
+                    pass
+
+            logger.info("[AIWorker] Hoan thanh. Do dai: %d ky tu.", len(full_text))
             try:
-                self.sig_finished.emit(answer)
+                self.sig_finished.emit(full_text)
             except RuntimeError:
                 pass
         except Exception as e:
@@ -148,9 +183,18 @@ class TTSWorker(QThread):
     sig_chunk_ready = pyqtSignal(str)   # Duong dan MP3 cua 1 chunk
     sig_done = pyqtSignal()             # Da hoan thanh viec tai tat ca chunks
 
-    def __init__(self, text: str, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self._text = text
+        import queue
+        self.queue = queue.Queue()
+        self._is_running = True
+
+    def add_sentence(self, sentence: str):
+        self.queue.put(sentence)
+        
+    def stop(self):
+        self._is_running = False
+        self.queue.put(None)
 
     def run(self):
         if not _EDGE_TTS_AVAILABLE:
@@ -162,29 +206,13 @@ class TTSWorker(QThread):
             return
 
         try:
+            import queue
             import re
-            # Normalize date for Edge-TTS (DD/MM/YYYY -> ngày DD tháng MM năm YYYY)
-            text_for_tts = re.sub(r'(\d{1,2})/(\d{1,2})/(\d{4})', r'ngày \1 tháng \2 năm \3', self._text)
-
-            # Smart Regex: Tach cau o dau cham, cham hoi, cham than theo sau boi dau cach hoac xuong dong
-            raw_chunks = re.split(r'(?<=[.?!])\s+|\n+', text_for_tts)
             
-            # Gop cac cau qua ngan (<20 ky tu) vao cau tiep theo
-            chunks = []
-            current_chunk = ""
-            for rc in raw_chunks:
-                rc_strip = rc.strip()
-                if not rc_strip:
-                    continue
-                current_chunk += (" " + rc_strip if current_chunk else rc_strip)
-                if len(current_chunk) >= 20 or rc == raw_chunks[-1]:
-                    chunks.append(current_chunk)
-                    current_chunk = ""
-            if current_chunk:
-                chunks.append(current_chunk)
-
             async def _download_chunk(chunk_text):
-                communicate = _edge_tts_mod.Communicate(chunk_text, voice=TTS_VOICE)
+                # Normalize date for Edge-TTS
+                text_for_tts = re.sub(r'(\d{1,2})/(\d{1,2})/(\d{4})', r'ngày \1 tháng \2 năm \3', chunk_text)
+                communicate = _edge_tts_mod.Communicate(text_for_tts, voice=TTS_VOICE)
                 fd, path = tempfile.mkstemp(suffix=".mp3")
                 os.close(fd)
                 await communicate.save(path)
@@ -193,15 +221,28 @@ class TTSWorker(QThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
-            for chunk in chunks:
+            while self._is_running:
+                try:
+                    sentence = self.queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                    
+                if sentence is None:
+                    break
+                    
                 if not self.isRunning():
                     break
-                path = loop.run_until_complete(_download_chunk(chunk))
-                logger.debug("[TTSWorker] Chunk MP3 tai xong: %s", path)
+                    
                 try:
-                    self.sig_chunk_ready.emit(path)
-                except RuntimeError:
-                    break
+                    path = loop.run_until_complete(_download_chunk(sentence))
+                    logger.debug("[TTSWorker] Chunk MP3 tai xong: %s", path)
+                    try:
+                        self.sig_chunk_ready.emit(path)
+                    except RuntimeError:
+                        break
+                except Exception as e:
+                    logger.warning(f"[TTSWorker] Loi tai chunk TTS: {e}")
+                    continue
             
             loop.close()
             try:
@@ -573,27 +614,26 @@ class SpotlightWindow(QWidget):
                 self._start_tts(self._last_response)
             return
 
+        if mode == "router":
+            # Chuyen tiep thang object dict xuong AIWorker (main.py se nhan)
+            if isinstance(result, dict):
+                intent_type = result.get("intent", "research_query")
+                if intent_type == "daily_task":
+                    self._show_result(f"Đang xử lý nhanh...")
+                elif intent_type == "research_query":
+                    self._show_result(f"Đang nghiên cứu chuyên sâu...")
+            self._start_ai_mode(result)
+            return
+
         if mode == "fast":
             # FAST: giu cua so, hien ket qua ngay
-            if isinstance(result, dict):
-                intent = result.get("intent", "")
-                if intent == "FORCE_WEB":
-                    query = result.get("query", original_text)
-                    self._show_result(f"[Dang tra mang bat buoc: {query}]")
-                    self._start_ai_mode(original_text)   # Day xuong AI voi query thuc
-                elif intent == "EXPORT_DOCX":
-                    topic = result.get("topic", "")
-                    self._show_result(
-                        f"[Xuat bao cao Word: '{topic}']\n"
-                        "Chuc nang se kha dung o Giai doan 5."
-                    )
-            elif isinstance(result, str) and result:
+            if isinstance(result, str) and result:
                 self._show_result(result)
                 self._last_response = result
                 # [FIX-BUG3] Phat TTS cho ket qua local (gio, ngay, ...) - truoc day chi hien text
                 self._start_tts(result)
 
-    def _start_ai_mode(self, text: str):
+    def _start_ai_mode(self, text: Any):
         """Che do AI: mo rong cua so + khoi dong AIWorker trong Worker Thread."""
         if self._process_fn is None:
             self._show_result(
@@ -627,6 +667,8 @@ class SpotlightWindow(QWidget):
             process_fn=self._process_fn,
             parent=self,
         )
+        self._ai_worker.sig_chunk.connect(self._on_ai_chunk)
+        self._ai_worker.sig_sentence.connect(self._on_ai_sentence)
         self._ai_worker.sig_finished.connect(self._on_ai_finished)
         self._ai_worker.sig_error.connect(self._on_ai_error)
         # [CRASH-FIX] Clear Python ref TRUOC deleteLater (ca 2 duong finished va error)
@@ -635,23 +677,49 @@ class SpotlightWindow(QWidget):
         self._ai_worker.sig_error.connect(lambda: setattr(self, '_ai_worker', None))
         self._ai_worker.sig_error.connect(self._ai_worker.deleteLater)  # [FIX] Tranh memory leak khi co loi
         self._ai_worker.start()
-        logger.info("[SpotlightWindow] AIWorker started: '%s'", text[:50])
+        
+        # Start TTS Worker in streaming mode
+        self._start_tts_streaming()
+        
+        # Log input. If text is dict, just print "Dict Input"
+        input_log = str(text)[:50]
+        logger.info("[SpotlightWindow] AIWorker started: '%s'", input_log)
 
     # ── Slots nhan tin hieu tu Worker Thread (chay trong Main Thread) ─────────
+
+    def _on_ai_chunk(self, chunk: str):
+        """Nhan tung chu tu AIWorker, hien thi dang type-writer."""
+        if self.status_label.isVisible():
+            self.status_label.hide()
+            self.result_box.show()
+            self.result_box.clear()
+            
+        cursor = self.result_box.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        cursor.insertText(chunk)
+        self.result_box.setTextCursor(cursor)
+        
+    def _on_ai_sentence(self, sentence: str):
+        """Nhan 1 cau hoan chinh tu AIWorker, gui vao TTSWorker."""
+        if self._tts_worker is not None:
+            self._tts_worker.add_sentence(sentence)
 
     def _on_ai_finished(self, answer: str):
         """Nhan ket qua tu AIWorker. Chay trong Main Thread (thread-safe qua signal)."""
         self._last_response = answer
         self.status_label.hide()
-        self._show_result(answer)
+        
+        # Result_box was updated by _on_ai_chunk, so we just make sure it's shown
+        self.result_box.show()
 
         # Mo lai o nhap
         self.input_box.setEnabled(True)
         self.input_box.setPlaceholderText("  Hỏi tiếp Digital Scholar...")
         self.input_box.setFocus()
 
-        # Phat TTS (neu edge-tts da cai)
-        self._start_tts(answer)
+        # Thong bao cho TTSWorker rang da xong
+        if self._tts_worker is not None:
+            self._tts_worker.stop()
         # NOTE: _ai_worker se tu dong set ve None qua lambda signal o tren
 
     def _on_ai_error(self, error_msg: str):
@@ -751,7 +819,7 @@ class SpotlightWindow(QWidget):
                     os.remove(specific_file)
                     logger.debug("[SpotlightWindow] Da xoa chunk TTS: %s", specific_file)
                 except Exception as e:
-                    logger.warning("[SpotlightWindow] Khong the xoa chunk TTS: %s", e)
+                    logger.warning("[SpotlightWindow] Khong the xoa chunk TTS: %s", e, exc_info=True)
         else:
             # Xoa toan bo playlist (khi bi ngat luong)
             files_to_delete = self._tts_playlist.copy()
@@ -767,24 +835,13 @@ class SpotlightWindow(QWidget):
                     try:
                         os.remove(f)
                     except Exception as e:
-                        logger.warning("[SpotlightWindow] Khong the xoa file TTS %s: %s", f, e)
+                        logger.warning("[SpotlightWindow] Khong the xoa file TTS %s: %s", f, e, exc_info=True)
 
-    def _start_tts(self, text: str):
-        """Khoi dong TTSWorker de tai file, huy file cu neu co."""
-        # [FIX-BUG8] Khong phat TTS neu la cau thong bao loi he thong
-        if not text or text == "REPEAT_LAST_VOICE":
-            return
-        if text.lower().startswith("lỗi") or text.lower().startswith("loi"):
-            logger.warning("[SpotlightWindow] Bo qua TTS cho thong bao loi.")
-            return
-
-        # [CRASH-FIX] deleteLater() xoa C++ object nhung Python ref van ton tai
-        # -> isRunning() tren object da xoa se throw RuntimeError -> app sap
-        # Fix: luon wrap bang try/except va reset ve None truoc khi tao moi
+    def _start_tts_streaming(self):
+        """Khoi dong TTSWorker che do luong (Queue) de chuan bi nhan tu AIWorker."""
         if self._tts_worker is not None:
             try:
-                # [FIX] Khong dung terminate() de ngat thread tren Windows vi gay crash EventLoop.
-                # Chi ngat signal de bo qua ket qua cua thread cu
+                self._tts_worker.stop()
                 self._tts_worker.sig_chunk_ready.disconnect()
                 self._tts_worker.sig_done.disconnect()
             except Exception:
@@ -792,23 +849,28 @@ class SpotlightWindow(QWidget):
             self._tts_worker = None
 
         self._cleanup_tts_file()
-
-        # [FIX] Loai bo ky tu dac biet (*, _, #) ma TTS khong doc duoc de tranh NoAudioReceived
-        import re
-        clean_tts = re.sub(r'[*_#]', '', text).strip()
-        if not clean_tts:
-            return
-
-        tts_text = clean_tts[:TTS_MAX_CHARS]
-        self._tts_worker = TTSWorker(tts_text, parent=self)
+        self._tts_worker = TTSWorker(parent=self)
         self._tts_worker.sig_chunk_ready.connect(self._on_tts_chunk_ready)
-        # [CRASH-FIX] Clear Python reference TRUOC khi deleteLater co the chay
-        # Dam bao lan goi _start_tts tiep theo khong gap RuntimeError
         self._tts_worker.sig_done.connect(lambda: setattr(self, '_tts_worker', None))
         self._tts_worker.sig_done.connect(self._tts_worker.deleteLater)
         self._tts_worker.start()
 
+    def _start_tts(self, text: str):
+        """Khoi dong TTSWorker cho text ngan hoac doc nguyen khoi."""
+        if not text or text == "REPEAT_LAST_VOICE":
+            return
+        if text.lower().startswith("lỗi") or text.lower().startswith("loi"):
+            logger.warning("[SpotlightWindow] Bo qua TTS cho thong bao loi.")
+            return
 
+        import re
+        clean_tts = re.sub(r'[*_#`~]', '', text).strip()
+        if not clean_tts:
+            return
+
+        self._start_tts_streaming()
+        self._tts_worker.add_sentence(clean_tts[:TTS_MAX_CHARS])
+        self._tts_worker.stop()
     def _on_tts_chunk_ready(self, path: str):
         """Khi TTSWorker tai xong 1 chunk, nap vao playlist va phat luon neu ranh."""
         if not path:
