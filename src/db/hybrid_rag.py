@@ -23,7 +23,6 @@ import gc
 import torch
 from typing import Optional, List, Dict, Any
 
-from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -40,10 +39,7 @@ from neo4j import GraphDatabase, Driver, exceptions as neo4j_exceptions
 # [S2-FIX] Không gọi basicConfig ở đây — main.py đã cấu hình toàn cục.
 logger = logging.getLogger("HybridRAG")
 
-# ─── Tải biến môi trường ───────────────────────────────────────────────────────
-load_dotenv()
-
-# ─── Hằng số cấu hình ─────────────────────────────────────────────────────────
+# ─── Config (đọc từ env đã được load_dotenv() trong main.py) ───────────────────
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"
 QDRANT_COLLECTION_NAME = "scholar_knowledge"
 QDRANT_VECTOR_SIZE = 768  # Kích thước vector của gte-multilingual-base
@@ -134,8 +130,8 @@ class QdrantManager:
                 logger.warning(f"[Qdrant] Lỗi kiểm tra collection: {e}. Recreating...")
                 try:
                     client.delete_collection(collection_name=QDRANT_COLLECTION_NAME)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("[Qdrant] Khong the xoa collection cu: %s", e)
                 client.create_collection(
                     collection_name=QDRANT_COLLECTION_NAME,
                     vectors_config=VectorParams(
@@ -588,6 +584,9 @@ class HybridRAG:
 
 # ─── Entry point để test nhanh module này độc lập ─────────────────────────────
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()  # Chỉ load khi chạy file độc lập để test
+
     print("--- HybridRAG Quick Test ---")
 
     rag = HybridRAG()

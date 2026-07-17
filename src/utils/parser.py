@@ -29,7 +29,6 @@ from typing import List, Dict, Any, Optional
 import fitz  # PyMuPDF
 import google.genai as genai
 from google.genai import types as genai_types
-from dotenv import load_dotenv
 
 # python-pptx chỉ dùng để đọc slide text và (tương lai) xuất slide thành ảnh
 try:
@@ -39,12 +38,12 @@ except ImportError:
     PPTX_AVAILABLE = False
     Presentation = None  # type: ignore
 
-# ─── Logging ─────────────────────────────────────────────────────────────────
-# [S4-FIX] Không gọi basicConfig ở đây — main.py đã cấu hình toàn cục.
+# ─── Logging ──────────────────────────────────────────────────────────────────
+# [S4-FIX] Không gọi basicConfig ở đây — main.py đã cấu hình toàn cục với
+# FileHandler + StreamHandler. Gọi lại chỉ tạo duplicate handler.
 logger = logging.getLogger("Parser")
 
-# ─── Tải biến môi trường ───────────────────────────────────────────────────────
-load_dotenv()
+# ─── Config (đọc từ env đã được load_dotenv() trong main.py) ──────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # ─── Hằng số cấu hình Chunking ────────────────────────────────────────────────
@@ -381,6 +380,9 @@ def parse_document(file_path: str) -> List[Dict[str, Any]]:
 
 # ─── Test nhanh khi chạy trực tiếp ───────────────────────────────────────────
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()  # Chỉ load khi chạy file độc lập để test
+
     import sys
     if len(sys.argv) < 2:
         print("Cách dùng: python parser.py <đường_dẫn_file.pdf|.pptx>")
