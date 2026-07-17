@@ -115,13 +115,15 @@ class VoiceRecorder:
         """Doc audio frames lien tuc cho den khi _is_recording = False hoac VAD tu ngat."""
         import audioop
         CALIBRATION_DURATION = 0.5 # 0.5 giay dau de do on nen (Auto-Calibration)
-        SILENCE_DURATION = 1.2     # [FIX] VAD ve muc an toan 1.2s cho dac thu am vuc Tieng Viet
+        SILENCE_DURATION = 1.2     # [FIX] VAD ve muc an toan 1.2s cho dac thu am vuc Tieng Viet (Giữ Ultra-Low Latency)
         
         frames_per_sec = self.rate / self.chunk
         max_silence_frames = int(SILENCE_DURATION * frames_per_sec)
         calibration_frames_count = int(CALIBRATION_DURATION * frames_per_sec)
         
         silence_count = 0
+        speech_count = 0           # Đếm số frame liên tiếp vượt ngưỡng để lọc tiếng gõ phím
+        min_speech_frames = int(0.2 * frames_per_sec) # ~3 frames (0.2s)
         has_spoken = False
         
         is_calibrating = True
@@ -141,21 +143,24 @@ class VoiceRecorder:
                     if len(calibration_rms_list) >= calibration_frames_count:
                         is_calibrating = False
                         avg_noise = sum(calibration_rms_list) / len(calibration_rms_list)
-                        # Threshold = Noise + 300 (buffer tranh tieng tho), min la 500
-                        silence_threshold = max(500, int(avg_noise + 300))
+                        # Threshold = Noise + 400 (buffer tranh tieng tho, on nen), min la 800
+                        silence_threshold = max(800, int(avg_noise + 400))
                         logger.info("[VoiceRecorder] Calibration xong. Noise: %.1f, Threshold: %d", avg_noise, silence_threshold)
                     continue  # Bo qua VAD check trong luc dang calibrate
                 
                 if rms > silence_threshold:
                     silence_count = 0
-                    has_spoken = True
+                    speech_count += 1
+                    if speech_count >= min_speech_frames:
+                        has_spoken = True
                 else:
+                    speech_count = 0
                     if has_spoken:
                         silence_count += 1
                         
                 # Tu dong ngat khi im lang du lau (chi khi da tung noi)
                 if has_spoken and silence_count > max_silence_frames:
-                    logger.info("[VoiceRecorder] Phat hien im lang > 1.2s. Tu dong ngat mic.")
+                    logger.info("[VoiceRecorder] Phat hien im lang > 1.5s. Tu dong ngat mic.")
                     self._is_recording = False
                     if self._on_silence_detected:
                         self._on_silence_detected()
@@ -215,9 +220,9 @@ class WhisperSTT:
             try:
                 with open(port_file, "r") as f:
                     return int(f.read().strip())
-            except:
-                pass
-        return 8001 # Fallback neu chua co file
+            except (OSError, ValueError) as e:
+                logger.warning("[WhisperSTT] Khong doc duoc port file: %s", e)
+        return 8001  # Fallback neu chua co file
 
     def _ping_server(self, port: int) -> bool:
         import urllib.request
@@ -225,7 +230,8 @@ class WhisperSTT:
             req = urllib.request.Request(f"http://127.0.0.1:{port}/ping", method="GET")
             with urllib.request.urlopen(req, timeout=1.0) as response:
                 return response.status == 200
-        except:
+        except Exception:
+            # Ping that bai la binh thuong khi server chua khoi dong
             return False
 
     def _load_model(self):
@@ -274,7 +280,7 @@ class WhisperSTT:
             # Don audio file ngay sau khi doc
             try:
                 os.remove(audio_path)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[VoiceWorker] Khong the xoa file audio_path cu: %s", e)
             import gc
             gc.collect()

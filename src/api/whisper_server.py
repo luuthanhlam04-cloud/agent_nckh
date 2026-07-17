@@ -113,11 +113,11 @@ class WhisperRequestHandler(BaseHTTPRequestHandler):
                 # Giai ma
                 text = transcribe_audio(path)
                 
-                # Don dep
+                # Don dep file WAV tam thoi
                 try:
                     os.remove(path)
-                except:
-                    pass
+                except OSError:
+                    pass  # File co the da bi xoa hoac bi khoa, bo qua
                 
                 self._set_headers(200)
                 self.wfile.write(json.dumps({"text": text}).encode("utf-8"))
@@ -177,8 +177,8 @@ def main():
         if os.path.exists(port_file):
             try:
                 os.remove(port_file)
-            except:
-                pass
+            except OSError:
+                pass  # File co the da bi xoa truoc do
         logger.info("Da thoat Whisper Server.")
 
 if __name__ == "__main__":

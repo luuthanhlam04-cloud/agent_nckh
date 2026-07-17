@@ -49,11 +49,13 @@ LUU Y QUAN TRONG:
 """
 
 import os
+import re
 import sys
 import asyncio
 import logging
 import tempfile
 import threading
+import time
 from typing import Optional, Any, Callable
 
 try:
@@ -221,17 +223,20 @@ class TTSWorker(QThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
-            while self._is_running:
+            while True:
                 try:
                     sentence = self.queue.get(timeout=0.5)
                 except queue.Empty:
+                    # Nếu queue rỗng VÀ có cờ báo ngưng (stop) thì thoát
+                    if not self._is_running:
+                        break
                     continue
                     
                 if sentence is None:
                     break
                     
-                if not self.isRunning():
-                    break
+                # Không được check self.isRunning() ở đây vì QThread đã bị mark finished nếu main thread tắt
+                # Chúng ta dựa vào cờ self._is_running và việc xả cạn queue.
                     
                 try:
                     path = loop.run_until_complete(_download_chunk(sentence))
@@ -336,8 +341,8 @@ class GlobalHotkeyWorker(QThread):
             import keyboard
             keyboard.unhook_all()   # Giai phong tat ca hook -> keyboard.wait() se return
             logger.info("[Hotkey] Da giai phong keyboard hooks.")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[Hotkey] Loi unhook keyboard: %s", e)
 
     def run(self):
         try:
@@ -596,6 +601,11 @@ class SpotlightWindow(QWidget):
                 logger.error("[SpotlightWindow] Interceptor loi: %s", e, exc_info=True)
                 result, mode = None, None
 
+            if mode == "ignore":
+                logger.info("[SpotlightWindow] Interceptor yêu cầu bỏ qua input này (Hallucination).")
+                self.hide()
+                return
+
             if result is not None and mode is not None:
                 self._handle_interceptor_result(result, mode, text)
                 return
@@ -844,8 +854,8 @@ class SpotlightWindow(QWidget):
                 self._tts_worker.stop()
                 self._tts_worker.sig_chunk_ready.disconnect()
                 self._tts_worker.sig_done.disconnect()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[TTSWorker] Loi disconnect: %s", e)
             self._tts_worker = None
 
         self._cleanup_tts_file()
@@ -863,7 +873,6 @@ class SpotlightWindow(QWidget):
             logger.warning("[SpotlightWindow] Bo qua TTS cho thong bao loi.")
             return
 
-        import re
         clean_tts = re.sub(r'[*_#`~]', '', text).strip()
         if not clean_tts:
             return
@@ -919,7 +928,6 @@ class SpotlightWindow(QWidget):
 
     def toggle_visibility(self):
         """Bat/tat cua so. Duoc goi tu GlobalHotkeyWorker qua signal."""
-        import time
         # [B26-FIX] Debounce 200ms: tranh double-toggle khi nhan hotkey 2 lan lien tiep
         if hasattr(self, '_last_toggle_time'):
             if time.time() - self._last_toggle_time < 0.2:
@@ -1178,17 +1186,17 @@ class SpotlightWindow(QWidget):
         if self._voice_worker and hasattr(self._voice_worker, '_audio_path'):
             path = self._voice_worker._audio_path
             if path and os.path.exists(path):
-                try: 
+                try:
                     os.remove(path)
                     logger.debug("[SpotlightWindow] Da xoa WAV temp tu VoiceWorker bi huy.")
-                except: 
-                    pass
+                except OSError as e:
+                    logger.warning("[SpotlightWindow] Khong xoa duoc WAV temp: %s", e)
 
         if hasattr(self, '_voice_recorder') and self._voice_recorder:
             try:
                 self._voice_recorder.cleanup()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[Cleanup] voice_recorder: %s", e)
         logger.info("[SpotlightWindow] Da don sach worker threads va pyaudio.")
 
 
@@ -1242,8 +1250,8 @@ def setup_system_tray(app: QApplication, window: SpotlightWindow) -> QSystemTray
             from PyQt6.QtWidgets import QSystemTrayIcon
             if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
                 window.toggle_visibility()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[Tray] Loi xu ly tray activation: %s", e)
 
     tray.activated.connect(_on_activated)
 
