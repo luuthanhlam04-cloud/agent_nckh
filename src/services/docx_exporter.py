@@ -77,19 +77,23 @@ class DocxExporter:
         logger.info("[DocxExporter] Dang truy van RAG (top_k=10)...")
         try:
             # Goi orchestrator voi query mo rong de lay nhieu context hon
-            rag_content = self._orchestrator.run(
+            # [BUG-J FIX] orchestrator.run() trả về Generator, phải join hết chunks
+            # Code cũ gán generator object trực tiếp → _build_docx() nhận iterator rỗng
+            gen = self._orchestrator.run(
                 user_input=(
                     f"Hay viet mot bai bao cao hoc thuat day du ve chu de: {topic}. "
                     f"Bao gom: dinh nghia, phuong phap, ung dung, han che va huong phat trien. "
                     f"Su dung tat ca tai lieu trong kho tri thuc."
                 )
             )
+            rag_content = "".join(chunk for chunk in gen if chunk)
             sources = self._orchestrator.get_last_sources()   # Lay nguon truy xuat
         except AttributeError:
             # Orchestrator khong co get_last_sources -> dung empty list
-            rag_content = self._orchestrator.run(
+            gen = self._orchestrator.run(
                 user_input=f"Hay viet mot bao cao hoc thuat ve: {topic}"
             )
+            rag_content = "".join(chunk for chunk in gen if chunk)
             sources = []
         except Exception as e:
             logger.error("[DocxExporter] Loi RAG: %s", e, exc_info=True)
@@ -310,8 +314,8 @@ class DocxExporter:
             rFonts.set(qn("w:hAnsi"), font_name)
             rFonts.set(qn("w:cs"), font_name)
             rFonts.set(qn("w:eastAsia"), font_name)
-        except Exception:
-            pass   # Khong anh huong chuc nang chinh
+        except Exception as e:
+            logger.debug("[DocxExporter] Khong the set east asian font: %s", e)
 
     @staticmethod
     def _add_horizontal_rule(doc):
@@ -330,8 +334,8 @@ class DocxExporter:
             bottom.set(qn("w:color"), "1A1A6C")
             pBdr.append(bottom)
             pPr.append(pBdr)
-        except Exception:
-            pass   # Fallback: khong co duong ke, khong crash
+        except Exception as e:
+            logger.debug("[DocxExporter] Khong the them duong ke: %s", e)
 
 
 # [M3-FIX] OxmlElement module-level import da duoc xoa.
