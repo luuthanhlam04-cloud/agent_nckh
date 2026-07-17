@@ -31,7 +31,6 @@ import google.genai as genai
 from google.genai import types as genai_types
 from openai import OpenAI
 from pydantic import BaseModel, Field
-from dotenv import load_dotenv
 
 # Web search
 try:
@@ -47,8 +46,7 @@ except ImportError:
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logger = logging.getLogger("Orchestrator")
 
-# ─── Config ───────────────────────────────────────────────────────────────────
-load_dotenv()
+# ─── Config (đọc từ env đã được load_dotenv() trong main.py) ─────────────────
 GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
@@ -188,16 +186,18 @@ class WorkerEngine:
                         yield delta
 
         except Exception as e:
-            # Bắt lỗi Safety Filter của Google (FinishReason.SAFETY - Bước 7.2 spec)
+            # [BUG-F FIX] Dùng yield thay vì return trong generator function.
+            # return <string> trong generator chỉ raise StopIteration, caller không nhận được message.
             error_msg = str(e)
             if "safety" in error_msg.lower() or "SAFETY" in error_msg:
                 logger.warning("[WorkerEngine] Kích hoạt bộ lọc an toàn Google. Trả thông báo.")
-                return (
+                yield (
                     "Tài liệu nghiên cứu chuyên ngành chứa thuật ngữ nhạy cảm "
                     "bị bộ lọc an toàn từ chối xử lý. Vui lòng thử diễn đạt lại câu hỏi."
                 )
-            logger.error(f"[WorkerEngine] Lỗi gọi API: {e}")
-            return f"Hệ thống lõi gặp sự cố kết nối API: {str(e)[:100]}. Vui lòng thử lại sau."
+                return
+            logger.error("[WorkerEngine] Lỗi gọi API: %s", e, exc_info=True)
+            yield f"Hệ thống lõi gặp sự cố kết nối API: {str(e)[:100]}. Vui lòng thử lại sau."
 
     def close(self):
         """Giải phóng client sau khi dùng."""
@@ -559,24 +559,32 @@ Trả lời bằng tiếng Việt học thuật:"""
         if intent == "daily_task":
             logger.info("[ReActOrchestrator] === Bắt đầu Fast-Track (daily_task) ===")
             import concurrent.futures
-            
-            def _get_rag():
+
+            def _get_rag() -> str:
+                """Truy xuất RAG song song (chạy trong ThreadPoolExecutor)."""
                 try:
-                    if self.hybrid_rag:
-                        chunks = self.hybrid_rag.search(user_input, top_k=3)
-                        return "\n\n".join([f"Trích xuất {i+1}:\n{c['text']}" for i, c in enumerate(chunks)])
+                    if self._rag:
+                        # [BUG-A FIX] self.hybrid_rag → self._rag (tên attribute đúng)
+                        # [DESIGN-6 FIX] .search() → .retrieve_context() theo chuẩn HybridRAG interface
+                        chunks = self._rag.retrieve_context(query=user_input, top_k=3)
+                        return "\n\n".join(
+                            f"Trích xuất {i+1}:\n{c['text']}"
+                            for i, c in enumerate(chunks)
+                        )
                 except Exception as e:
-                    logger.error(f"[FastTrack] Lỗi RAG: {e}")
+                    logger.error("[FastTrack] Lỗi RAG: %s", e, exc_info=True)
                 return ""
-                
-            def _get_web():
+
+            def _get_web() -> str:
+                """Tìm kiếm web song song (chạy trong ThreadPoolExecutor)."""
                 try:
                     if DDGS_AVAILABLE:
-                        # DDGS needs to be used without max_results if it errors, but max_results is fine usually
                         results = DDGS().text(user_input, max_results=3)
-                        return "\n".join([f"- {r['title']}: {r['body']}" for r in results])
+                        return "\n".join(
+                            f"- {r['title']}: {r['body']}" for r in results
+                        )
                 except Exception as e:
-                    logger.error(f"[FastTrack] Lỗi Web: {e}")
+                    logger.error("[FastTrack] Lỗi Web: %s", e, exc_info=True)
                 return ""
 
             rag_text = ""
@@ -588,14 +596,21 @@ Trả lời bằng tiếng Việt học thuật:"""
                 web_text = web_future.result()
 
             context_combined = ""
-            if rag_text: context_combined += f"=== Tài liệu nội bộ ===\n{rag_text}\n\n"
-            if web_text: context_combined += f"=== Tìm kiếm Web ===\n{web_text}\n\n"
-            if not context_combined: context_combined = "(Không tìm thấy ngữ cảnh bổ sung.)"
+            if rag_text:
+                context_combined += f"=== Tài liệu nội bộ ===\n{rag_text}\n\n"
+            if web_text:
+                context_combined += f"=== Tìm kiếm Web ===\n{web_text}\n\n"
+            if not context_combined:
+                context_combined = "(Không tìm thấy ngữ cảnh bổ sung.)"
 
-            user_prompt = f"NGỮ CẢNH:\n{context_combined}\nCÂU HỎI:\n{user_input}\nTrả lời ngắn gọn bằng tiếng Việt:"
+            user_prompt = (
+                f"NGỮ CẢNH:\n{context_combined}\n"
+                f"CÂU HỎI:\n{user_input}\n"
+                f"Trả lời ngắn gọn bằng tiếng Việt:"
+            )
             gen = self._worker.generate(
                 system_prompt="Bạn là trợ lý ảo. Trả lời nhanh gọn, trực tiếp vào trọng tâm.",
-                user_prompt=user_prompt
+                user_prompt=user_prompt,
             )
             for chunk in gen:
                 yield chunk
@@ -645,18 +660,22 @@ Trả lời bằng tiếng Việt học thuật:"""
 
         # Bước 3: Generate
         gen = self._node_generate(state)
-        
+
         # Nếu _node_generate trả về Exception dict thay vì generator
+        total_chars = 0
         if isinstance(gen, dict) and "error" in gen:
-            yield gen["final_answer"]
+            answer = gen.get("final_answer", "")
+            total_chars = len(answer)
+            yield answer
         else:
             for chunk in gen:
+                total_chars += len(chunk)
                 yield chunk
-        
+
         logger.info(
-            f"[ReActOrchestrator] === Hoàn thành. "
-            f"Search loops={state['search_iterations']} | "
-            f"Answer length={len(state['final_answer'])} chars ==="
+            "[ReActOrchestrator] === Hoàn thành. "
+            "Search loops=%d | Answer length=%d chars ===",
+            state["search_iterations"], total_chars,
         )
 
     def get_last_sources(self) -> list:
@@ -675,6 +694,9 @@ Trả lời bằng tiếng Việt học thuật:"""
 
 # ─── Test nhanh khi chạy trực tiếp ───────────────────────────────────────────
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()  # Chỉ load khi chạy file độc lập để test
+
     print("--- Orchestrator Component Test ---")
     print("Testing SelfCritiqueResult Pydantic model...\n")
 
