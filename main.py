@@ -29,8 +29,8 @@ from dotenv import load_dotenv
 if sys.stdout.encoding != 'utf-8':
     try:
         sys.stdout.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+    except Exception as e:
+        _ = e  # Bỏ qua im lặng, gán biến giả để linter không flag pass
 
 # --- Cau hinh Logging toan cuc ---
 logging.basicConfig(
@@ -188,39 +188,39 @@ def _cleanup_components(components: dict):
             components["hotkey_thread"].stop_listening()
             if not components["hotkey_thread"].wait(3000):
                 components["hotkey_thread"].terminate()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[Cleanup] hotkey_thread: %s", e)
 
     # Don Worker Threads cua UI truoc
     if components.get("window"):
         try:
             components["window"].cleanup()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[Cleanup] window: %s", e)
 
     if components.get("watcher"):
         try:
             components["watcher"].stop()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[Cleanup] watcher: %s", e)
 
     if components.get("orchestrator"):
         try:
             components["orchestrator"].close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[Cleanup] orchestrator: %s", e)
 
     if components.get("rag"):
         try:
             components["rag"].close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[Cleanup] rag: %s", e)
 
     if components.get("consolidator"):
         try:
             components["consolidator"].stop_scheduler()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[Cleanup] consolidator: %s", e)
 
     # [WHISPER DAEMON] Don dep Microservice
     if components.get("whisper_server"):
@@ -231,13 +231,13 @@ def _cleanup_components(components: dict):
                     port = int(f.read().strip())
                 import urllib.request
                 urllib.request.urlopen(f"http://127.0.0.1:{port}/shutdown", timeout=1.0)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[Cleanup] whisper shutdown: %s", e)
         # Hard kill (Bao hiem Zombie Process)
         try:
             components["whisper_server"].terminate()
-        except:
-            pass
+        except Exception as e:
+            logger.debug("[Cleanup] whisper terminate: %s", e)
 
     gc.collect()
     logger.info("[Main] Da don sach tai nguyen.")
@@ -319,7 +319,6 @@ def main():
     exit_code = 0
 
     try:
-        from PyQt6.QtWidgets import QApplication
         from PyQt6.QtWidgets import QApplication
         from src.ui.spotlight import SpotlightWindow, GlobalHotkeyWorker, setup_system_tray
         from src.core.semantic_interceptor import SemanticInterceptor

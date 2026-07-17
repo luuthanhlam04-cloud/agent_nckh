@@ -1,7 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-production_check.py (Tầng 1: Linter Static Analysis & Tầng 2: Dynamic Test)
-Kiểm tra code tuân thủ ARCHITECTURE_RULES.md bằng AST và tự động kích hoạt run_tests.py
+production_check.py - Cảnh sát Kiến trúc (Architecture Police) — Agent V5.0
+=======================================================================
+Tầng 1: Static Analysis (AST Linter)
+  - Kiểm tra code tuân thủ ARCHITECTURE_RULES.md bằng AST
+  - Rule: Slot Naming (_on_*), Worker Naming (*Worker), Signal Naming (sig_*)
+  - Rule: Sleep Ban (no time.sleep() trên UI Thread)
+  - Rule: Whisper Lock, GC Discipline
+  - Rule: Bare Except (except: phải có exception type rõ ràng)
+  - Rule: No Print (print() ngoài __main__ block bị warn)
+Tầng 2: Dynamic Tests (run_tests.py)
 """
 import ast
 import os
@@ -32,6 +40,8 @@ class LinterASTVisitor(ast.NodeVisitor):
         self.is_voice_engine = self.filename == 'voice_engine.py'
         self.current_function = None
         self.with_stack = []
+        self.in_main_block = False  # Track if inside `if __name__ == '__main__':` block
+        self._has_logging_in_scope: list = []  # Stack for tracking logging calls in except
 
     def visit_With(self, node):
         self.with_stack.append(node)
@@ -81,6 +91,72 @@ class LinterASTVisitor(ast.NodeVisitor):
             for alias in node.names:
                 if alias.name in ['QWidget', 'QMainWindow']:
                     add_error("Luật Cấm Vận UI", f"Worker cấm import {alias.name}", self.filepath, node.lineno)
+    def visit_If(self, node):
+        """Track __main__ block để cho phép print() bên trong."""
+        is_main_block = (
+            isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == '__name__'
+            and any(
+                isinstance(c, ast.Constant) and c.value == '__main__'
+                for c in node.test.comparators
+            )
+        )
+        prev = self.in_main_block
+        if is_main_block:
+            self.in_main_block = True
+        self.generic_visit(node)
+        self.in_main_block = prev
+
+    def visit_ExceptHandler(self, node):
+        """
+        Rule: No Bare Except — phát hiện `except:` hoặc `except Exception: pass`
+        không có bất kỳ logging/print nào bên trong.
+        """
+        # Kiểm tra bare except (không có type)
+        if node.type is None:
+            add_error(
+                "No Bare Except",
+                "`except:` không có exception type. Dùng `except SomeError as e:` cụ thể.",
+                self.filepath, node.lineno
+            )
+        else:
+            # Kiểm tra `except Exception: pass` (không log gì)
+            body_calls = []
+            for child in ast.walk(ast.Module(body=node.body, type_ignores=[])):
+                if isinstance(child, ast.Call):
+                    body_calls.append(child)
+            has_logging = any(
+                (
+                    isinstance(c.func, ast.Attribute)
+                    and isinstance(c.func.value, ast.Name)
+                    and c.func.value.id == 'logger'
+                ) or (
+                    isinstance(c.func, ast.Name)
+                    and c.func.id in ('print', 'logging')
+                )
+                for c in body_calls
+            )
+            body_is_just_pass = (
+                len(node.body) == 1
+                and isinstance(node.body[0], ast.Pass)
+            )
+            # Chỉ flag nếu body chỉ có pass và không có logging
+            if body_is_just_pass and not has_logging:
+                # Cho phép một số exception type cảm nhận là acceptable (OSError, RuntimeError, ...)
+                exc_type_name = ""
+                if isinstance(node.type, ast.Name):
+                    exc_type_name = node.type.id
+                elif isinstance(node.type, ast.Attribute):
+                    exc_type_name = node.type.attr
+                acceptable_silent = {"OSError", "RuntimeError", "StopIteration", "KeyboardInterrupt"}
+                if exc_type_name not in acceptable_silent:
+                    add_error(
+                        "No Bare Except (Silent)",
+                        f"`except {exc_type_name}: pass` không có logging. Thêm logger.warning(...) hoặc xử lý rõ ràng.",
+                        self.filepath, node.lineno
+                    )
+
         self.generic_visit(node)
 
     def visit_Call(self, node):
@@ -89,6 +165,13 @@ class LinterASTVisitor(ast.NodeVisitor):
             if isinstance(node.func, ast.Attribute) and node.func.attr == 'sleep':
                 if isinstance(node.func.value, ast.Name) and node.func.value.id == 'time':
                     add_error("Luật Cấm Ngủ (Sleep Ban)", "Cấm dùng time.sleep() trên Main Thread/UI", self.filepath, node.lineno)
+
+        # Rule: No Print (ngoài __main__ block)
+        if not self.in_main_block:
+            if isinstance(node.func, ast.Name) and node.func.id == 'print':
+                # WARN (không FAIL) — print có thể chấp nhận trong test file
+                if not any(test_kw in self.filename for test_kw in ('test', 'run_tests', 'production_check')):
+                    print(f"{WARN} {self.filepath}:{node.lineno} - No Print Rule: print() trong source file (dùng logger thay thế)")
 
         # Rule: Whisper Lock
         if self.is_voice_engine:
