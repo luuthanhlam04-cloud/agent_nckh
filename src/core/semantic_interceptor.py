@@ -21,13 +21,17 @@ from typing import Optional, Tuple, Any, Callable, List
 logger = logging.getLogger("SemanticInterceptor")
 
 OBSIDIAN_MEMORY_FILE = os.path.join("03_Agent_Memory", "Profile.md")
-THRESHOLD = 0.85  # Ngưỡng Cosine Similarity để quyết định (Tuneable)
+THRESHOLD = 0.87  # Ngưỡng Cosine Similarity để quyết định (Tuned for False Positives vs False Negatives)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TẬP NEO NGỮ NGHĨA (ANCHORS)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _ANCHORS_MAP = {
+    "GREETING": [
+        "xin chào", "chào bạn", "hello", "hi", "chào buổi sáng", 
+        "chào sếp", "xin chào tất cả", "chào mọi người", "alo"
+    ],
     "TIME_QUERY": [
         "bây giờ là mấy giờ", 
         "hôm nay là ngày mấy", 
@@ -122,11 +126,23 @@ class SemanticInterceptor:
     def _filter_whisper_hallucination(self, text: str) -> bool:
         hallucinations = ["cảm ơn các bạn", "xin chào các bạn", "subtitles by", "amara.org", "thanks for watching", "hẹn gặp lại", "chúc một ngày tốt lành", "nhớ đăng ký kênh"]
         lower_text = text.lower().strip()
+        
+        # 1. Lọc theo danh sách đen (ngắn gọn)
         if len(text.split()) < 10:
             for h in hallucinations:
                 if h in lower_text:
-                    logger.info(f"[SemanticInterceptor] Đã chặn Whisper Hallucination: {text[:50]}")
+                    logger.info(f"[SemanticInterceptor] Đã chặn Whisper Hallucination (Blacklist): {text[:50]}")
                     return True
+                    
+        # 2. Lọc theo mẫu từ lặp lại (ví dụ: "chào chào chào", "biết biết biết")
+        words = lower_text.split()
+        if len(words) >= 3:
+            # Kiểm tra xem có 3 từ liên tiếp giống nhau không
+            for i in range(len(words) - 2):
+                if words[i] == words[i+1] == words[i+2]:
+                    logger.info(f"[SemanticInterceptor] Đã chặn Whisper Hallucination (Repetition): {text[:50]}")
+                    return True
+                    
         return False
 
     def intercept(self, user_input: str, vault_path: str = "", last_response: str = "") -> Tuple[Optional[Any], Optional[str]]:
@@ -174,7 +190,10 @@ class SemanticInterceptor:
         now = datetime.now()
         weekday = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"][now.weekday()]
 
-        if intent == "TIME_QUERY":
+        if intent == "GREETING":
+            return "Chào sếp! Hệ thống luôn sẵn sàng hỗ trợ, sếp cần giúp gì ạ?", "fast"
+
+        elif intent == "TIME_QUERY":
             # Xử lý nhanh ngày giờ
             if "năm" in text.lower():
                 return f"Năm nay là năm {now.year}.", "fast"
@@ -252,7 +271,8 @@ class SemanticInterceptor:
                     import pyperclip
                     pyperclip.copy(last_response)
                     return "Đã sao chép câu trả lời vào bộ nhớ tạm.", "fast"
-                except: return "Lỗi: Chưa cài thư viện pyperclip.", "fast"
+                except ImportError:
+                    return "Lỗi: Chưa cài thư viện pyperclip.", "fast"
             return "Chưa có câu trả lời nào để copy.", "fast"
 
         elif intent == "NINJA_TOAST":
@@ -260,7 +280,10 @@ class SemanticInterceptor:
                 try:
                     from win11toast import toast
                     toast("Digital Scholar", last_response[:200], duration="long")
-                except: pass
+                except ImportError:
+                    logger.warning("[Interceptor] win11toast chua cai, bo qua toast.")
+                except Exception as e:
+                    logger.warning("[Interceptor] Loi hien thi toast: %s", e)
             return "Đã hiển thị thông báo góc màn hình.", "fast"
 
         elif intent == "NINJA_REPEAT":
@@ -290,7 +313,8 @@ class SemanticInterceptor:
                             vid = item["videoRenderer"]["videoId"]
                             webbrowser.open(f"https://www.youtube.com/watch?v={vid}")
                             return
-            except: pass
+            except Exception as e:
+                logger.warning("[Interceptor] Loi tim video YouTube: %s", e)
             # Fallback
             webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}")
         threading.Thread(target=_worker, daemon=True, name="YouTubeAutoPlay").start()
