@@ -55,7 +55,6 @@ def transcribe_audio(wav_path: str) -> str:
     if not _model:
         return ""
     try:
-        # faster-whisper tra ve generator. Lay text tu segments
         segments, info = _model.transcribe(
             wav_path,
             language="vi",
@@ -63,11 +62,37 @@ def transcribe_audio(wav_path: str) -> str:
             condition_on_previous_text=False,
             temperature=0.0
         )
-        text = " ".join([segment.text for segment in segments])
-        return text.strip()
+
+        # [S1-FIX-HALLUCINATION] Dung no_speech_prob de loc bo cac segment "ao giac" cua Whisper.
+        # faster-whisper tra ve no_speech_prob cho tung segment:
+        #   - Gan 0.0 = co giong nguoi that su
+        #   - Gan 1.0 = tieng on / khong co giong noi
+        # Nguong 0.6: neu xac suat "khong co giong noi" > 60% thi bo segment nay.
+        NO_SPEECH_THRESHOLD = 0.6
+
+        valid_texts = []
+        for segment in segments:
+            if segment.no_speech_prob < NO_SPEECH_THRESHOLD:
+                valid_texts.append(segment.text.strip())
+            else:
+                logger.info(
+                    "[WhisperServer] Bo segment hallucination (no_speech_prob=%.2f > %.2f): '%s'",
+                    segment.no_speech_prob, NO_SPEECH_THRESHOLD, segment.text[:50]
+                )
+
+        text = " ".join(valid_texts).strip()
+
+        # [S1-FIX-HALLUCINATION] Bo ket qua qua ngan (< 2 tu) - thuong la nhieu/ao giac
+        if len(text.split()) < 2:
+            logger.info("[WhisperServer] Ket qua qua ngan (%d tu), bo qua: '%s'", len(text.split()), text)
+            return ""
+
+        return text
+
     except Exception as e:
         logger.error(f"Loi giai ma audio: {e}")
         return ""
+
 
 # ==============================================================================
 # HTTP SERVER HANDLER

@@ -29,7 +29,8 @@ Pillow
 # ─── Tầng Tự động hóa ngầm ───────────────────────────────────────────────────
 watchdog
 APScheduler
-duckduckgo-search
+ddgs
+webrtcvad-wheels
 
 # ─── Tiện ích & Cấu hình ─────────────────────────────────────────────────────
 python-dotenv

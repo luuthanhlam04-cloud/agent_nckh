@@ -34,14 +34,11 @@ from pydantic import BaseModel, Field
 
 # Web search
 try:
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        from duckduckgo_search import DDGS
+    from ddgs import DDGS
     DDGS_AVAILABLE = True
 except ImportError:
     DDGS_AVAILABLE = False
-    logging.warning("[Orchestrator] duckduckgo-search chưa cài. Web search sẽ bị skip.")
+    logging.warning("[Orchestrator] ddgs chua cai. Web search se bi skip. Chay: pip install ddgs")
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logger = logging.getLogger("Orchestrator")
