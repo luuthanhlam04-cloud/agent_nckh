@@ -325,8 +325,10 @@ class GlobalHotkeyWorker(QThread):
     [BUG-11 FIX] Them flag _running va phuong thuc stop() de dung sach.
     keyboard.unhook_all() giai phong hook truoc khi thread ket thuc.
     """
-    sig_toggle = pyqtSignal()   # Phat ve Main Thread khi hotkey duoc bam
-    sig_voice = pyqtSignal()    # Phat ve khi bam Alt+Space (Voice Mode)
+    sig_toggle = pyqtSignal()    # Phat ve Main Thread khi hotkey duoc bam
+    sig_voice = pyqtSignal()     # Phat ve khi bam Alt+Space (Voice Mode - VAD toggle)
+    sig_ptt_start = pyqtSignal() # [S2-PTT] Phat khi bat dau giu phim (PTT Mode)
+    sig_ptt_stop  = pyqtSignal() # [S2-PTT] Phat khi tha phim (PTT Mode)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -354,18 +356,56 @@ class GlobalHotkeyWorker(QThread):
                     self.sig_toggle.emit()
                 except RuntimeError:
                     pass
-                
-            def _on_voice_hotkey():
-                logger.info("[Hotkey] %s bam -> voice_signal.", VOICE_HOTKEY)
-                try:
-                    self.sig_voice.emit()
-                except RuntimeError:
-                    pass
+
+            # [S2-PTT] Doc VOICE_MODE tu bien moi truong
+            # ptt = Push-to-Talk (giu phim = ghi, tha phim = gui)
+            # vad = VAD tu dong (bam 1 lan de bat/tat, hien tai la mode mac dinh)
+            voice_mode = os.getenv("VOICE_MODE", "ptt").strip().lower()
+            logger.info("[Hotkey] Voice Mode: %s", voice_mode.upper())
 
             keyboard.add_hotkey(GLOBAL_HOTKEY, _on_hotkey)
-            keyboard.add_hotkey(VOICE_HOTKEY, _on_voice_hotkey)
-            logger.info("[Hotkey] Dang lang nghe %s va %s (can quyen Admin).", GLOBAL_HOTKEY, VOICE_HOTKEY)
-            keyboard.wait()   # Blocking: giu thread song - se return khi unhook_all() duoc goi
+
+            if voice_mode == "ptt":
+                # [S2-PTT] Push-to-Talk: theo doi press va release cua Alt+Space
+                _ptt_active = False
+
+                def _on_key_press(event):
+                    nonlocal _ptt_active
+                    if event.name == 'space' and keyboard.is_pressed('alt'):
+                        if not _ptt_active:
+                            _ptt_active = True
+                            logger.info("[Hotkey] [PTT] Giu phim -> ptt_start.")
+                            try:
+                                self.sig_ptt_start.emit()
+                            except RuntimeError:
+                                pass
+
+                def _on_key_release(event):
+                    nonlocal _ptt_active
+                    if event.name in ('space', 'alt') and _ptt_active:
+                        _ptt_active = False
+                        logger.info("[Hotkey] [PTT] Tha phim -> ptt_stop.")
+                        try:
+                            self.sig_ptt_stop.emit()
+                        except RuntimeError:
+                            pass
+
+                keyboard.on_press(_on_key_press)
+                keyboard.on_release(_on_key_release)
+                logger.info("[Hotkey] Dang lang nghe %s (PTT) va %s.", VOICE_HOTKEY, GLOBAL_HOTKEY)
+            else:
+                # VAD mode giu nguyen logic cu (toggle)
+                def _on_voice_hotkey():
+                    logger.info("[Hotkey] %s bam -> voice_signal.", VOICE_HOTKEY)
+                    try:
+                        self.sig_voice.emit()
+                    except RuntimeError:
+                        pass
+
+                keyboard.add_hotkey(VOICE_HOTKEY, _on_voice_hotkey)
+                logger.info("[Hotkey] Dang lang nghe %s va %s (can quyen Admin).", GLOBAL_HOTKEY, VOICE_HOTKEY)
+
+            keyboard.wait()  # Blocking: giu thread song - se return khi unhook_all() duoc goi
 
         except ImportError:
             logger.warning("[Hotkey] Thu vien 'keyboard' chua cai. Hotkey bi tat.")
@@ -1024,6 +1064,62 @@ class SpotlightWindow(QWidget):
         if self._is_recording:
             self.toggle_voice_recording()
 
+    # ── [S2-PTT] Push-to-Talk handlers ──────────────────────────────────────
+
+    def _on_ptt_start(self):
+        """[S2-PTT] Bat dau ghi am ngay khi nhan tin hieu giu phim.
+        Khac voi VAD mode: khong can greeting, mo mic luon, nhanh hon.
+        """
+        # Guard: Neu dang busy hoac dang recording thi bo qua
+        if self._is_recording or self._is_busy():
+            return
+
+        # Guard: Kiem tra pyaudio va Whisper Server san sang
+        if not self._voice_recorder:
+            return
+
+        from src.ui.voice_engine import WhisperSTT
+        stt = WhisperSTT()
+        if not stt._ping_server(stt._get_server_port()):
+            self.show_and_focus()
+            self._show_result("Hệ thống nhận diện giọng nói đang khởi động. Vui lòng thử lại sau vài giây!")
+            return
+
+        # Bat mic luon, khong can phat greeting
+        self._is_recording = True
+        self.show_and_focus()
+        self.input_box.setEnabled(False)
+        self.input_box.setPlaceholderText("  🔴 Đang nghe... (Nhả Alt để gửi)")
+        self._voice_recorder.start_recording()
+        logger.info("[SpotlightWindow] [PTT] Bat dau ghi am (khong co greeting).")
+
+    def _on_ptt_stop(self):
+        """[S2-PTT] Dung ghi am va gui Whisper khi nhan tin hieu tha phim."""
+        if not self._is_recording:
+            return
+
+        self._is_recording = False
+        self.input_box.setPlaceholderText("  Đang giải mã giọng nói...")
+        self.input_box.setEnabled(False)
+
+        audio_path = self._voice_recorder.stop_recording()
+        if audio_path:
+            self.status_label.setText("   Đang giải mã giọng nói (Whisper)...")
+            self.status_label.show()
+            self._expand_window()
+
+            self._voice_worker = VoiceWorker(audio_path=audio_path, parent=self)
+            self._voice_worker.sig_finished.connect(self._on_voice_finished)
+            self._voice_worker.sig_finished.connect(lambda: setattr(self, '_voice_worker', None))
+            self._voice_worker.sig_finished.connect(self._voice_worker.deleteLater)
+            self._voice_worker.start()
+            logger.info("[SpotlightWindow] [PTT] Tha phim, bat dau giai ma Whisper.")
+        else:
+            # Audio qua ngan (tieng on, tap am) -> thong bao nhe
+            self.input_box.setEnabled(True)
+            self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
+            logger.info("[SpotlightWindow] [PTT] Audio qua ngan, bo qua.")
+
     def _start_recording_now(self):
         """Bat micro chinh thuc, co co che Bắt tay (Handshake) voi Whisper Server."""
         self._waiting_for_greeting = False
@@ -1101,9 +1197,17 @@ class SpotlightWindow(QWidget):
             self.input_box.setEnabled(False)
             self.input_box.setPlaceholderText("  Đang gọi trợ lý... (Vui lòng chờ tiếng Bíp)")
             
-            # Bat dau luong phat loi chao (Jarvis Approach)
-            self.show_and_focus()
-            self._play_greeting(for_voice=True)
+            # [S4-UX] Neu cua so da dang hien thi, KHONG can phat greeting.
+            # Mo mic ngay de tang toc do phan hoi (tiet kiem 5-15 giay).
+            # Neu cua so chua hien -> show va phat greeting nhu cu.
+            if self.isVisible():
+                self._waiting_for_greeting = False
+                self._start_recording_now()
+                logger.info("[SpotlightWindow] [S4-UX] Cua so da mo, skip greeting -> mo mic ngay.")
+            else:
+                # Bat dau luong phat loi chao (Jarvis Approach)
+                self.show_and_focus()
+                self._play_greeting(for_voice=True)
 
     def _on_voice_finished(self, text: str):
         """Nhan ket qua tu WhisperSTT va tu dong gui lenh."""

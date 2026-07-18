@@ -378,7 +378,9 @@ def main():
         # LUU Y: Can quyen Administrator tren Windows de hook toan cuc
         hotkey_thread = GlobalHotkeyWorker(parent=app)
         hotkey_thread.sig_toggle.connect(window.toggle_visibility)
-        hotkey_thread.sig_voice.connect(window.toggle_voice_recording)
+        hotkey_thread.sig_voice.connect(window.toggle_voice_recording)  # VAD mode
+        hotkey_thread.sig_ptt_start.connect(window._on_ptt_start)       # [S2-PTT]
+        hotkey_thread.sig_ptt_stop.connect(window._on_ptt_stop)         # [S2-PTT]
         hotkey_thread.start()
         components["hotkey_thread"] = hotkey_thread
 

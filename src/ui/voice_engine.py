@@ -28,11 +28,14 @@ _whisper_lock = threading.Lock()
 
 
 class VoiceRecorder:
-    """Ghi am tu microphone, luu file WAV, su dung VAD de tu dong ngat."""
+    """Ghi am tu microphone, luu file WAV, su dung webrtcvad de phat hien giong noi."""
 
     def __init__(self, on_silence_detected=None):
         import pyaudio
-        self.chunk = 1024
+        # [S3-WEBRTCVAD] BẮT BUỘC: chunk = 480 frames = 30ms tai 16000Hz
+        # webrtcvad chi chap nhan dung 10ms/20ms/30ms (160/320/480 frames).
+        # KHONG duoc de 1024 (64ms) -> ValueError: invalid frame length -> crash!
+        self.chunk = 480
         self.format = pyaudio.paInt16
         self.channels = 1
         self.rate = 16000
@@ -42,6 +45,19 @@ class VoiceRecorder:
         self._is_recording = False
         self._record_thread = None
         self._on_silence_detected = on_silence_detected
+
+        # [S3-WEBRTCVAD] Khoi tao webrtcvad (Fallback ve RMS neu chua cai)
+        # mode=2: can bang giua do nhanh va chinh xac cho tieng Viet
+        # mode 0=thoang nhat, 3=khat khe nhat
+        try:
+            import webrtcvad
+            self._vad = webrtcvad.Vad(mode=2)
+            self._use_webrtcvad = True
+            logger.info("[VoiceRecorder] webrtcvad da san sang (mode=2, frame=30ms).")
+        except ImportError:
+            self._vad = None
+            self._use_webrtcvad = False
+            logger.warning("[VoiceRecorder] webrtcvad chua cai. Dung RMS fallback. Chay: pip install webrtcvad-wheels")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -94,6 +110,17 @@ class VoiceRecorder:
             logger.warning("[VoiceRecorder] Khong co du lieu audio.")
             return None
 
+        # [S1-FIX-VAD] Guard: Kiem tra do dai audio toi thieu truoc khi gui Whisper
+        # Audio qua ngan (< 1.5s) = tieng on, tieng tho, tieng go phim -> bo qua, tra None
+        MIN_AUDIO_FRAMES = int(1.5 * (self.rate / self.chunk))  # 1.5 giay
+        if len(self._frames) < MIN_AUDIO_FRAMES:
+            logger.info(
+                "[VoiceRecorder] Audio qua ngan (%d frames < %d min). Bo qua, khong gui Whisper.",
+                len(self._frames), MIN_AUDIO_FRAMES
+            )
+            self._frames.clear()
+            return None
+
         path = self._save_wav()
         # [OPT] Giai phong RAM ghi am ngay sau khi save
         self._frames.clear()
@@ -112,43 +139,52 @@ class VoiceRecorder:
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _record_loop(self):
-        """Doc audio frames lien tuc cho den khi _is_recording = False hoac VAD tu ngat."""
-        import audioop
-        CALIBRATION_DURATION = 0.5 # 0.5 giay dau de do on nen (Auto-Calibration)
-        SILENCE_DURATION = 1.2     # [FIX] VAD ve muc an toan 1.2s cho dac thu am vuc Tieng Viet (Giữ Ultra-Low Latency)
-        
+        """Doc audio frames lien tuc cho den khi _is_recording = False hoac VAD tu ngat.
+
+        [S3-WEBRTCVAD] Su dung webrtcvad.Vad thay the audioop.rms + nguong thu cong.
+        webrtcvad phan biet chinh xac tieng nguoi noi vs tieng on nen bang mo hinh thong ke.
+        Khong can buoc Calibration 0.5s nua -> mic phan hoi ngay khi bat.
+        """
+        SILENCE_DURATION = 1.2   # Giay im lang toi thieu sau khi noi de tu dong ngat mic
+
         frames_per_sec = self.rate / self.chunk
         max_silence_frames = int(SILENCE_DURATION * frames_per_sec)
-        calibration_frames_count = int(CALIBRATION_DURATION * frames_per_sec)
-        
+        # [S1-FIX-VAD] Phai noi lien tuc >= 0.5s moi tich la da noi (chong tieng go phim)
+        min_speech_frames = int(0.5 * frames_per_sec)
+
         silence_count = 0
-        speech_count = 0           # Đếm số frame liên tiếp vượt ngưỡng để lọc tiếng gõ phím
-        min_speech_frames = int(0.2 * frames_per_sec) # ~3 frames (0.2s)
+        speech_count = 0
         has_spoken = False
-        
-        is_calibrating = True
-        calibration_rms_list = []
-        silence_threshold = 500  # Default fallback
+        # Timeout bao hiem: 30s toi da, tranh ghi am vo tan
+        MAX_TOTAL_FRAMES = int(30 * frames_per_sec)
 
         while self._is_recording and self._stream:
             try:
                 data = self._stream.read(self.chunk, exception_on_overflow=False)
                 self._frames.append(data)
-                
-                # VAD: Tinh nang luong am thanh
-                rms = audioop.rms(data, 2)
-                
-                if is_calibrating:
-                    calibration_rms_list.append(rms)
-                    if len(calibration_rms_list) >= calibration_frames_count:
-                        is_calibrating = False
-                        avg_noise = sum(calibration_rms_list) / len(calibration_rms_list)
-                        # Threshold = Noise + 400 (buffer tranh tieng tho, on nen), min la 800
-                        silence_threshold = max(800, int(avg_noise + 400))
-                        logger.info("[VoiceRecorder] Calibration xong. Noise: %.1f, Threshold: %d", avg_noise, silence_threshold)
-                    continue  # Bo qua VAD check trong luc dang calibrate
-                
-                if rms > silence_threshold:
+
+                # [S4-TIMEOUT] Nguong bao hiem: cap 30 giay toi da
+                if len(self._frames) > MAX_TOTAL_FRAMES:
+                    logger.warning("[VoiceRecorder] Timeout 30s. Tu dong ngat mic.")
+                    self._is_recording = False
+                    if self._on_silence_detected:
+                        self._on_silence_detected()
+                    break
+
+                # [S3-WEBRTCVAD] Phat hien giong noi bang webrtcvad
+                if self._use_webrtcvad and self._vad:
+                    try:
+                        is_speech = self._vad.is_speech(data, self.rate)
+                    except Exception:
+                        # Fallback an toan neu co loi khong mong muon
+                        is_speech = False
+                else:
+                    # Fallback: RMS threshold don gian neu webrtcvad chua cai
+                    import audioop
+                    rms = audioop.rms(data, 2)
+                    is_speech = rms > 1000
+
+                if is_speech:
                     silence_count = 0
                     speech_count += 1
                     if speech_count >= min_speech_frames:
@@ -157,15 +193,15 @@ class VoiceRecorder:
                     speech_count = 0
                     if has_spoken:
                         silence_count += 1
-                        
+
                 # Tu dong ngat khi im lang du lau (chi khi da tung noi)
                 if has_spoken and silence_count > max_silence_frames:
-                    logger.info("[VoiceRecorder] Phat hien im lang > 1.5s. Tu dong ngat mic.")
+                    logger.info("[VoiceRecorder] Phat hien im lang > %.1fs. Tu dong ngat mic.", SILENCE_DURATION)
                     self._is_recording = False
                     if self._on_silence_detected:
                         self._on_silence_detected()
                     break
-                    
+
             except OSError as e:
                 logger.error("[VoiceRecorder] Microphone ngat ket noi: %s", e, exc_info=True)
                 self._is_recording = False
