@@ -20,9 +20,9 @@ import os
 import uuid
 import logging
 import gc
-import torch
 from typing import Optional, List, Dict, Any
 
+import torch
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -32,6 +32,7 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
+    MatchAny,
 )
 from neo4j import GraphDatabase, Driver, exceptions as neo4j_exceptions
 
@@ -165,64 +166,150 @@ class QdrantManager:
         points = []
 
         for chunk in chunks:
-            chunk_id = str(uuid.uuid4())
+            metadata = chunk.get("metadata", {})
+            chunk_type = metadata.get("chunk_type", "legacy")
+            chunk_id = metadata.get("chunk_id", str(uuid.uuid4()))
+            parent_id = metadata.get("parent_id")
+
             # e5-base yêu cầu prefix 'passage: ' cho tài liệu lưu trữ
             vector = model.encode(f"passage: {chunk['text']}", normalize_embeddings=True).tolist()
             payload = {
+                "chunk_type": chunk_type,
                 "text": chunk["text"],
                 "source": chunk.get("source", "unknown"),
                 "page": chunk.get("page", 0),
-                **chunk.get("metadata", {}),
+                **metadata,
             }
+            if parent_id:
+                payload["parent_id"] = parent_id
+
             points.append(PointStruct(id=chunk_id, vector=vector, payload=payload))
             chunk_ids.append(chunk_id)
 
         # Upsert theo batch để tối ưu hiệu suất
         client.upsert(collection_name=QDRANT_COLLECTION_NAME, points=points)
-        logger.info(f"[Qdrant] Đã lưu {len(points)} chunks thành công.")
+        logger.info(f"[Qdrant] Đã lưu {len(points)} chunks thành công (bao gồm Parent & Child).")
         return chunk_ids
+
+    def _rerank(self, query: str, candidates: List[Any], top_k: int) -> List[Any]:
+        """
+        [Sprint C] Tái dụng e5-base để rerank bằng cách tính contextual similarity.
+        Không cần load thêm Cross-Encoder, tiết kiệm RAM.
+        """
+        if not candidates:
+            return []
+            
+        model = self._get_model()
+        # Encode query
+        query_vec = torch.tensor(model.encode(f"query: {query}", normalize_embeddings=True))
+        
+        scored_candidates = []
+        for candidate in candidates:
+            text = candidate.payload.get("text", "")
+            # Encode đoạn văn bản có chứa thêm context của câu hỏi
+            combined_text = f"query: {query} passage: {text}"
+            combined_vec = torch.tensor(model.encode(combined_text, normalize_embeddings=True))
+            
+            # Tính cosine similarity
+            score = torch.nn.functional.cosine_similarity(query_vec.unsqueeze(0), combined_vec.unsqueeze(0)).item()
+            # Bọc candidate và score vào tuple (không set trực tiếp vào Pydantic model)
+            scored_candidates.append((score, candidate))
+            
+        # Sắp xếp lại theo điểm rerank
+        scored_candidates.sort(key=lambda x: x[0], reverse=True)
+        # Lấy lại danh sách candidates đã được sắp xếp
+        sorted_candidates = [item[1] for item in scored_candidates[:top_k]]
+        
+        # Bơm điểm rerank vào payload tạm thời để dùng về sau
+        for score, candidate in scored_candidates[:top_k]:
+            candidate.payload["_rerank_score"] = score
+            
+        return sorted_candidates
 
     def search(self, query: str, top_k: int = 5, filter_source: Optional[str] = None) -> List[Dict]:
         """
-        Tìm kiếm ngữ nghĩa các chunk liên quan đến câu hỏi.
-
-        Args:
-            query: Câu hỏi của người dùng (tiếng Việt hoặc Anh đều được).
-            top_k: Số lượng kết quả trả về.
-            filter_source: Lọc theo tên file nguồn (optional).
-
-        Returns:
-            Danh sách dict chứa chunk_id, score, text và metadata.
+        Tìm kiếm ngữ nghĩa (Sprint B + C):
+        - B1: Tìm top-20 chunk (ưu tiên Child) bằng Cosine thô.
+        - B2: Rerank top-20 xuống top_k bằng e5-base contextual similarity.
+        - B3: Nếu chunk là Child, fetch Parent chunk gốc trả về cho AI.
         """
         client = self._get_client()
         vector = self.embed_text(query)
 
-        qdrant_filter = None
+        # [Sprint B] Lọc chỉ tìm các chunk có thể chứa thông tin chi tiết (child hoặc legacy)
+        conditions = [
+            FieldCondition(key="chunk_type", match=MatchAny(any=["child", "legacy"]))
+        ]
         if filter_source:
-            qdrant_filter = Filter(
-                must=[FieldCondition(key="source", match=MatchValue(value=filter_source))]
-            )
+            conditions.append(FieldCondition(key="source", match=MatchValue(value=filter_source)))
 
-        # qdrant-client >= 1.7: dùng query_points() thay cho search() đã deprecated
+        qdrant_filter = Filter(must=conditions)
+        
+        # [Sprint C] Lấy nhiều ứng viên hơn (top-20) để rerank
+        raw_top_k = max(20, top_k * 2)
+
         response = client.query_points(
             collection_name=QDRANT_COLLECTION_NAME,
             query=vector,
-            limit=top_k,
+            limit=raw_top_k,
             query_filter=qdrant_filter,
             with_payload=True,
         )
-        results = response.points
-
-        return [
-            {
-                "chunk_id": str(r.id),
-                "score": round(r.score, 4),
-                "text": r.payload.get("text", ""),
-                "source": r.payload.get("source", ""),
-                "page": r.payload.get("page", 0),
-            }
-            for r in results
-        ]
+        
+        # [Sprint C] Reranking
+        raw_candidates = response.points
+        if not raw_candidates:
+            return []
+            
+        reranked_results = self._rerank(query, raw_candidates, top_k=top_k)
+        
+        # [Sprint B] Parent Retrieval Logic
+        final_results = []
+        parent_ids_to_fetch = set()
+        child_mapping = {}  # Lưu thông tin child để biết score và text highlight
+        
+        for r in reranked_results:
+            pid = r.payload.get("parent_id")
+            rerank_score = r.payload.get("_rerank_score", r.score)
+            if pid:
+                if pid not in child_mapping:
+                    parent_ids_to_fetch.add(pid)
+                    child_mapping[pid] = {
+                        "score": rerank_score,
+                        "child_text": r.payload.get("text", "")
+                    }
+            else:
+                # Chunk legacy, không có parent
+                final_results.append({
+                    "chunk_id": str(r.id),
+                    "score": round(rerank_score, 4),
+                    "text": r.payload.get("text", ""),
+                    "source": r.payload.get("source", ""),
+                    "page": r.payload.get("page", 0),
+                })
+                
+        # Lấy Parent chunks từ DB
+        if parent_ids_to_fetch:
+            parents = client.retrieve(
+                collection_name=QDRANT_COLLECTION_NAME,
+                ids=list(parent_ids_to_fetch),
+                with_payload=True
+            )
+            for p in parents:
+                pid = str(p.id)
+                child_info = child_mapping.get(pid, {})
+                final_results.append({
+                    "chunk_id": pid,
+                    "score": round(child_info.get("score", 0.0), 4),
+                    "text": p.payload.get("text", ""),  # Text gốc lớn của Parent
+                    "source": p.payload.get("source", ""),
+                    "page": p.payload.get("page", 0),
+                    "highlight": child_info.get("child_text", "")  # Text của Child để highlight
+                })
+                
+        # Sắp xếp lại lần cuối vì kết hợp cả legacy và parent
+        final_results.sort(key=lambda x: x["score"], reverse=True)
+        return final_results[:top_k]
 
     def get_chunks_by_ids(self, chunk_ids: List[str]) -> List[Dict]:
         """
