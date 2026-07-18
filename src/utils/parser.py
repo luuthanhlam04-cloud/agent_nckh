@@ -23,6 +23,7 @@ import os
 import time
 import logging
 import re
+import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -47,80 +48,180 @@ logger = logging.getLogger("Parser")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # ─── Hằng số cấu hình Chunking ────────────────────────────────────────────────
-MIN_CHUNK_CHARS = 150       # Bỏ qua đoạn văn quá ngắn (tiêu đề, số trang...)
-MAX_CHUNK_CHARS = 2000      # Giới hạn kích thước tối đa một chunk (~500 tokens)
-CHUNK_OVERLAP_CHARS = 400   # Gối đầu văn bản (~100 tokens)
+# [Sprint A] Giảm chunk size để vector đặc trưng hơn, tránh Semantic Dilution.
+# MAX 600 ≈ 150 từ = 1-2 đoạn văn → mỗi vector đại diện cho 1 ý cụ thể.
+MIN_CHUNK_CHARS = 80        # Không bỏ qua bullet point, định nghĩa ngắn quan trọng
+MAX_CHUNK_CHARS = 600       # Giới hạn ~150 từ để vector đặc trưng (giảm từ 2000)
+CHUNK_OVERLAP_CHARS = 150   # ~1 câu cuối để giữ ngữ cảnh ranh giới (giảm từ 400)
 PPTX_SLEEP_SECONDS = 4      # Ngủ giữa mỗi slide để tránh Rate Limit Google (15 req/phút)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  HELPER: Chunking theo ranh giới đoạn văn
+#  HELPER: Chunking theo ranh giới đoạn văn (Recursive + Heading-aware)
 # ══════════════════════════════════════════════════════════════════════════════
 def chunk_by_paragraph(
     text: str,
     source: str,
     page: int = 0,
     metadata: Optional[Dict] = None,
+    section_title: str = "",
 ) -> List[Dict[str, Any]]:
     """
-    Cắt văn bản dài thành các chunk nhỏ theo ranh giới đoạn văn (paragraph level).
-    Chiến lược này bảo toàn ngữ nghĩa của câu tốt hơn so với cắt theo số ký tự cố định.
+    [Sprint A] Cắt văn bản thành chunk nhỏ theo ranh giới ngữ nghĩa.
+    - Ưu tiên tách tại: heading markdown (# ## ###) → dòng trống → câu.
+    - Mỗi chunk mang metadata section_title để AI biết ngữ cảnh Section.
 
     Args:
-        text    : Văn bản đầu vào (Markdown hoặc plain text).
-        source  : Tên file nguồn (để lưu vào metadata Qdrant).
-        page    : Số trang (cho PDF).
-        metadata: Thông tin bổ sung tuỳ chỉnh.
+        text         : Văn bản đầu vào.
+        source       : Tên file nguồn (lưu vào Qdrant payload).
+        page         : Số trang PDF.
+        metadata     : Thông tin bổ sung.
+        section_title: Tên Section hiện tại (Abstract, Method, Result...)
 
     Returns:
-        Danh sách dict chunk chuẩn để đưa vào Qdrant.
+        Danh sách dict chunk chuẩn để đưa vào QdrantManager.
     """
-    # Tách theo dòng trống (paragraph break) hoặc heading Markdown
-    paragraphs = re.split(r"\n{2,}|(?=^#+\s)", text, flags=re.MULTILINE)
+    # Tách theo dòng trống ≥ 2 dòng, hoặc ngay trước heading Markdown (# ## ###)
+    # [Sprint A] Heading tạo ranh giới cứng → mỗi Section thành cụm chunk riêng
+    paragraphs = re.split(r"\n{2,}|(?=^#{1,3}\s)", text, flags=re.MULTILINE)
     chunks = []
     buffer = ""
+    current_section = section_title  # Theo dõi Section hiện tại
 
     for para in paragraphs:
         para = para.strip()
         if not para:
             continue
 
-        # Nếu buffer + đoạn hiện tại vẫn nằm trong giới hạn, tiếp tục ghép
-        if len(buffer) + len(para) < MAX_CHUNK_CHARS:
+        # Nhận diện heading Markdown → flush buffer và cập nhật section_title
+        # [Sprint A] Heading = ranh giới cứng, không ghép vào chunk đang dở
+        heading_match = re.match(r'^(#{1,3})\s+(.+?)(?:\n|$)', para)
+        if heading_match:
+            # Flush buffer hiện tại trước khi bắt đầu Section mới
+            if buffer and len(buffer) >= MIN_CHUNK_CHARS:
+                chunks.append({
+                    "text": buffer,
+                    "source": source,
+                    "page": page,
+                    "metadata": {**(metadata or {}), "section_title": current_section},
+                })
+            buffer = ""
+            current_section = heading_match.group(2).strip()
+            # Bóc phần text còn lại (nếu có) nằm ngay dưới heading mà bị dính liền
+            para = para[heading_match.end():].strip()
+            if not para:
+                continue
+
+        # Nếu buffer + đoạn hiện tại nằm trong giới hạn → ghép tiếp
+        if len(buffer) + len(para) + 2 < MAX_CHUNK_CHARS:
             buffer = (buffer + "\n\n" + para).strip() if buffer else para
         else:
-            # Đẩy buffer hiện tại vào kết quả nếu đủ dài
+            # Buffer đầy → flush ra chunk
             if len(buffer) >= MIN_CHUNK_CHARS:
                 chunks.append({
                     "text": buffer,
                     "source": source,
                     "page": page,
-                    "metadata": metadata or {},
+                    "metadata": {**(metadata or {}), "section_title": current_section},
                 })
-                # Khởi tạo buffer mới với overlap từ buffer cũ
+                # Overlap: giữ lại ~1 câu cuối để không mất ngữ cảnh ranh giới
                 if len(buffer) > CHUNK_OVERLAP_CHARS:
                     overlap_text = buffer[-CHUNK_OVERLAP_CHARS:]
-                    # Cắt tại khoảng trắng để không đứt ngang từ
+                    # Cắt tại khoảng trắng gần nhất để không đứt ngang từ
                     space_idx = overlap_text.find(' ')
                     if space_idx != -1 and space_idx < len(overlap_text) - 1:
-                        overlap_text = overlap_text[space_idx+1:]
+                        overlap_text = overlap_text[space_idx + 1:]
                     buffer = (overlap_text + "\n\n" + para).strip()
                 else:
                     buffer = para
             else:
-                buffer = para
+                # Buffer quá ngắn → ghép tiếp thay vì flush rác
+                buffer = (buffer + "\n\n" + para).strip() if buffer else para
 
-    # Đẩy phần còn lại của buffer
+    # Flush phần còn lại
     if buffer and len(buffer) >= MIN_CHUNK_CHARS:
         chunks.append({
             "text": buffer,
             "source": source,
             "page": page,
-            "metadata": metadata or {},
+            "metadata": {**(metadata or {}), "section_title": current_section},
         })
 
-    logger.info(f"[Parser] Chunking '{source}' trang {page}: {len(chunks)} chunks")
+    logger.info(
+        "[Parser] Chunking '%s' trang %d: %d chunks (section='%s')",
+        source, page, len(chunks), current_section or "unknown"
+    )
     return chunks
+
+
+def _extract_blocks_with_headings(page: "fitz.Page", file_name: str) -> List[Dict]:
+    """
+    [Sprint A] Đọc trang PDF theo chế độ 'dict' để lấy thêm font metadata.
+    Phát hiện heading dựa vào font_size > median * 1.2 hoặc is_bold.
+    Trả về danh sách blocks có đánh dấu is_heading, text, và font_size.
+
+    Fallback an toàn: nếu get_text('dict') thất bại → dùng get_text('text') bình thường.
+    """
+    blocks_out = []
+    try:
+        raw_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+        all_sizes = []
+        # Thu thập tất cả font_size để tính median
+        for block in raw_dict.get("blocks", []):
+            if block.get("type") != 0:  # type=0 là text block
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    sz = span.get("size", 0)
+                    if sz > 0:
+                        all_sizes.append(sz)
+
+        if not all_sizes:
+            # Fallback: không có font info, dùng plain text
+            return [{"text": page.get_text("text"), "is_heading": False, "font_size": 0}]
+
+        # Median font size = ngưỡng phân biệt body text vs heading
+        all_sizes_sorted = sorted(all_sizes)
+        median_size = all_sizes_sorted[len(all_sizes_sorted) // 2]
+        heading_threshold = median_size * 1.2  # Dòng nào to hơn 120% median → heading
+
+        # Nhóm spans thành blocks văn bản, gắn cờ is_heading
+        for block in raw_dict.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            block_lines = []
+            block_sizes = []
+            for line in block.get("lines", []):
+                line_text = ""
+                line_size = 0
+                for span in line.get("spans", []):
+                    span_text = span.get("text", "").strip()
+                    if span_text:
+                        line_text += span_text + " "
+                        line_size = max(line_size, span.get("size", 0))
+                line_text = line_text.strip()
+                if len(line_text) > 5:  # Bỏ qua dòng quá ngắn (số trang...)
+                    block_lines.append(line_text)
+                    block_sizes.append(line_size)
+
+            if not block_lines:
+                continue
+
+            block_text = " ".join(block_lines)
+            avg_size = sum(block_sizes) / len(block_sizes) if block_sizes else 0
+            is_heading = avg_size >= heading_threshold and len(block_text) < 200
+
+            blocks_out.append({
+                "text": block_text,
+                "is_heading": is_heading,
+                "font_size": round(avg_size, 1),
+            })
+
+    except Exception as e:
+        logger.warning("[PDFParser] Fallback plain text cho trang (dict mode lỗi): %s", e)
+        blocks_out = [{"text": page.get_text("text"), "is_heading": False, "font_size": 0}]
+
+    return blocks_out
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -145,39 +246,76 @@ class PDFParser:
             Danh sách chunk chuẩn, sẵn sàng đưa vào Qdrant.
         """
         file_name = Path(pdf_path).name
-        logger.info(f"[PDFParser] Bắt đầu bóc tách: {file_name}")
+        logger.info("[PDFParser] Bắt đầu bóc tách (Heading-aware): %s", file_name)
 
         all_chunks = []
         try:
             doc = fitz.open(pdf_path)
+            current_section = ""  # [Sprint A] Theo dõi Section xuyên suốt toàn tài liệu
+
             for page_num, page in enumerate(doc, start=1):
-                # Lấy toàn bộ text của trang, giữ nguyên layout dọc
-                raw_text = page.get_text("text")
-                if not raw_text or len(raw_text.strip()) < 50:
+                # [Sprint A] Dùng dict mode để detect heading qua font_size
+                blocks = _extract_blocks_with_headings(page, file_name)
+
+                # Gộp các block thành văn bản, đánh dấu heading bằng prefix ##
+                page_lines = []
+                for block in blocks:
+                    text = block["text"].strip()
+                    if not text or len(text) < 10:
+                        continue
+                    if block["is_heading"]:
+                        # Prefix ## để chunk_by_paragraph nhận ra heading và flush
+                        page_lines.append(f"## {text}")
+                        current_section = text  # Cập nhật Section tracker
+                    else:
+                        page_lines.append(text)
+
+                cleaned_text = "\n\n".join(page_lines)
+                if not cleaned_text or len(cleaned_text.strip()) < 50:
                     continue
 
-                # Làm sạch: loại bỏ dòng quá ngắn (< 20 ký tự) như số trang, header lặp
-                cleaned_lines = [
-                    line for line in raw_text.split("\n")
-                    if len(line.strip()) > 20
-                ]
-                cleaned_text = "\n".join(cleaned_lines)
+                # [Sprint B] Tạo Chunk Cha (Parent) đại diện cho toàn bộ trang/section
+                parent_id = str(uuid.uuid4())
+                parent_chunk = {
+                    "text": cleaned_text,
+                    "source": file_name,
+                    "page": page_num,
+                    "metadata": {
+                        "file_type": "pdf",
+                        "total_pages": len(doc),
+                        "section_title": current_section,
+                        "chunk_type": "parent",
+                        "chunk_id": parent_id
+                    }
+                }
+                all_chunks.append(parent_chunk)
 
-                # Chunk theo đoạn văn
+                # [Sprint B] Tạo Chunk Con (Child) và liên kết bằng parent_id
                 page_chunks = chunk_by_paragraph(
                     text=cleaned_text,
                     source=file_name,
                     page=page_num,
-                    metadata={"file_type": "pdf", "total_pages": len(doc)},
+                    metadata={
+                        "file_type": "pdf", 
+                        "total_pages": len(doc),
+                        "chunk_type": "child",
+                        "parent_id": parent_id
+                    },
+                    section_title=current_section,
                 )
                 all_chunks.extend(page_chunks)
+
+                # Cập nhật current_section từ các heading được detect trong trang này
+                for block in blocks:
+                    if block["is_heading"] and block["text"].strip():
+                        current_section = block["text"].strip()
 
             doc.close()
 
         except Exception as e:
-            logger.error(f"[PDFParser] Lỗi khi bóc tách '{file_name}': {e}")
+            logger.error("[PDFParser] Lỗi khi bóc tách '%s': %s", file_name, e)
 
-        logger.info(f"[PDFParser] Hoàn thành: {file_name} -> {len(all_chunks)} chunks.")
+        logger.info("[PDFParser] Hoàn thành: %s -> %d chunks.", file_name, len(all_chunks))
         return all_chunks
 
     def save_markdown(self, pdf_path: str, output_dir: str) -> str:
