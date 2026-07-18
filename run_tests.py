@@ -325,10 +325,30 @@ except Exception as e:
 # ─────────────────────────────────────────────
 print()
 print("=" * 60)
+print("  TEST 9: Vector Pipeline (Sprint A, B, C)")
+print("=" * 60)
+try:
+    from src.utils.parser import chunk_by_paragraph
+    
+    sample_text = "## Abstract\n\n" + ("This is a very long text to bypass the min chunk limit. " * 10) + "\n\n## Methodology\n\n" + ("We used Bi-Encoder with Parent-Child chunking. " * 10)
+    chunks = chunk_by_paragraph(text=sample_text, source="test.pdf", section_title="Intro")
+    
+    check("Sprint A: Chunk count", len(chunks) == 2, f"Expected 2 chunks, got {len(chunks)}")
+    check("Sprint A: Metadata section_title detected", chunks[1]["metadata"]["section_title"] == "Methodology")
+    
+except Exception as e:
+    print(f"  {FAIL} TEST 9 EXCEPTION: {e}")
+    results.append((False, "TEST 9 EXCEPTION"))
+
+# ─────────────────────────────────────────────
+print("=" * 60)
+passed = sum(1 for r in results if r[0])
 total = len(results)
-passed = sum(1 for ok, _ in results if ok)
 failed = total - passed
-print(f"  FINAL RESULT: {passed}/{total} PASSED  |  {failed} FAILED")
+if passed == total:
+    print(f"  FINAL RESULT: {passed}/{total} PASSED  |  0 FAILED")
+else:
+    print(f"  FINAL RESULT: {passed}/{total} PASSED  |  {failed} FAILED")
 print("=" * 60)
 if failed > 0:
     print()
