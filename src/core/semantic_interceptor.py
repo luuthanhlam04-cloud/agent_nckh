@@ -27,70 +27,8 @@ THRESHOLD = 0.87  # Ngưỡng Cosine Similarity để quyết định (Tuned for
 #  TẬP NEO NGỮ NGHĨA (ANCHORS)
 # ══════════════════════════════════════════════════════════════════════════════
 
-_ANCHORS_MAP = {
-    "GREETING": [
-        "xin chào", "chào bạn", "hello", "hi", "chào buổi sáng", 
-        "chào sếp", "xin chào tất cả", "chào mọi người", "alo"
-    ],
-    "TIME_QUERY": [
-        "bây giờ là mấy giờ", 
-        "hôm nay là ngày mấy", 
-        "hôm nay thứ mấy", 
-        "đồng hồ điểm mấy giờ rồi",
-        "thời gian hiện tại",
-        "tháng này là tháng mấy",
-        "năm nay là năm nào"
-    ],
-    "OS_YOUTUBE": [
-        "mở youtube", 
-        "phát bài nhạc", 
-        "bật video trên youtube", 
-        "cho nghe bài hát",
-        "mở bài hát lên"
-    ],
-    "OS_ZALO": ["mở zalo", "vào ứng dụng zalo", "khởi động zalo"],
-    "OS_APP": [
-        "mở ứng dụng", "bật phần mềm", "khởi động ứng dụng", 
-        "mở app", "khởi chạy phần mềm", "mở word", "mở excel", 
-        "mở chrome", "mở notepad", "mở vscode"
-    ],
-    "OS_EXPLORER": ["mở thư mục", "mở file explorer", "vào thư mục hiện tại"],
-    "OS_WEBSITE": [
-        "mở trang web", "vào website", "truy cập trang", "vào mạng",
-        "mở facebook", "vào trang facebook", "truy cập vnexpress",
-        "mở trang google docs", "vào dantri", "mở github"
-    ],
-    "OBSIDIAN_SAVE": [
-        "lưu vào ghi chú", 
-        "nhớ nội dung này lại", 
-        "ghi vào sổ tay", 
-        "lưu thông tin này vào não",
-        "hãy ghi nhớ rằng",
-        "lưu câu bạn vừa nói",
-        "ghi nhớ thông tin vừa rồi"
-    ],
-    "FORCE_WEB": [
-        "tìm trên mạng", 
-        "tra google thử xem", 
-        "bỏ qua rag tìm mạng đi", 
-        "tra cứu internet",
-        "tìm kiếm thông tin trên google"
-    ],
-    "EXPORT_DOCX": [
-        "xuất báo cáo word", 
-        "tạo file docx", 
-        "lưu thành file word",
-        "tổng hợp thành báo cáo word"
-    ],
-    "NINJA_COPY": ["copy lại câu trả lời", "sao chép câu vừa rồi", "sao chép lại text"],
-    "NINJA_TOAST": ["hiện chữ lên", "bật thông báo text", "hiện text lên màn hình"],
-    "NINJA_REPEAT": ["nói lại đi", "đọc lại xem nào", "nhắc lại câu vừa rồi", "nghe chưa rõ đọc lại đi"],
-    "SMALL_TALK": [
-        "thời tiết hôm nay", "hôm nay thế nào", "tỷ giá usd", 
-        "giá vàng", "bạn thấy sao", "tóm tắt nhanh tin tức",
-        "dịch câu này", "kể chuyện cười"
-    ]
-}
+# Biến cục bộ để chứa mapping. Sẽ được nạp từ file intents.json trong __init__
+_ANCHORS_MAP = {}
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
     dot_product = sum(a * b for a, b in zip(v1, v2))
@@ -111,6 +49,16 @@ class SemanticInterceptor:
         self._anchor_vectors: List[Tuple[str, List[float]]] = []
         self._is_ready = False
         
+        # Load cấu hình từ file intents.json
+        global _ANCHORS_MAP
+        config_path = os.path.join(os.path.dirname(__file__), "intents.json")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                _ANCHORS_MAP = json.load(f)
+        except Exception as e:
+            logger.error(f"[SemanticInterceptor] Lỗi nạp intents.json: {e}")
+            _ANCHORS_MAP = {}
+            
         logger.info("[SemanticInterceptor] Đang mã hóa tập Anchors (Zero-Cost)...")
         # Khởi chạy luồng nền để mã hóa anchors, không làm block quá trình khởi động
         threading.Thread(target=self._init_anchors, daemon=True).start()
@@ -186,6 +134,10 @@ class SemanticInterceptor:
             return match.group(1).strip()
         return text.strip()
 
+    def _sanitize_command(self, cmd: str) -> str:
+        """Loại bỏ ký tự đặc biệt nguy hiểm để chống Command Injection."""
+        return re.sub(r'[^a-zA-Z0-9\s-]', '', cmd).strip()
+
     def _execute_intent(self, intent: str, text: str, vault_path: str, last_response: str) -> Tuple[Optional[Any], Optional[str]]:
         now = datetime.now()
         weekday = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"][now.weekday()]
@@ -225,8 +177,11 @@ class SemanticInterceptor:
             app = self._extract_payload(text, ["mở ứng dụng", "khởi động phần mềm", "khởi động ứng dụng", "bật phần mềm", "khởi chạy phần mềm", "mở app", "bật app", "mở", "bật", "khởi động", "khởi chạy"])
             if not app: app = text
             # Dùng lệnh start của Windows để mở các app có trong PATH (notepad, winword, chrome...)
-            subprocess.Popen(f"start {app}", shell=True)
-            return f"Đã gửi lệnh khởi chạy ứng dụng: {app}", "ninja"
+            safe_app = self._sanitize_command(app)
+            if safe_app:
+                subprocess.Popen(f"start {safe_app}", shell=True)
+                return f"Đã gửi lệnh khởi chạy ứng dụng: {safe_app}", "ninja"
+            return "Tên ứng dụng không hợp lệ.", "ninja"
             
         elif intent == "OS_EXPLORER":
             subprocess.Popen("explorer .", shell=True)
@@ -297,24 +252,24 @@ class SemanticInterceptor:
     def _play_youtube_async(self, query: str):
         def _worker():
             try:
-                encoded = urllib.parse.quote(query)
-                req = urllib.request.Request(
-                    f"https://www.youtube.com/results?search_query={encoded}",
-                    headers={"User-Agent": "Mozilla/5.0"}
-                )
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    html = resp.read().decode("utf-8", errors="ignore")
-                m = re.search(r'var ytInitialData = (\{.+?\});</script>', html, re.DOTALL)
-                if m:
-                    data = json.loads(m.group(1))
-                    contents = data["contents"]["twoColumnSearchResultsRenderer"]["primaryContents"]["sectionListRenderer"]["contents"][0]["itemSectionRenderer"]["contents"]
-                    for item in contents:
-                        if "videoRenderer" in item:
-                            vid = item["videoRenderer"]["videoId"]
-                            webbrowser.open(f"https://www.youtube.com/watch?v={vid}")
-                            return
+                import yt_dlp
+                ydl_opts = {
+                    'default_search': 'ytsearch',
+                    'noplaylist': True,
+                    'quiet': True,
+                    'extract_flat': True
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(f"ytsearch:{query}", download=False)
+                    if 'entries' in info and len(info['entries']) > 0:
+                        vid = info['entries'][0]['id']
+                        webbrowser.open(f"https://www.youtube.com/watch?v={vid}")
+                        return
+            except ImportError:
+                logger.info("[Interceptor] yt-dlp chưa được cài đặt. Kích hoạt Hybrid Fallback mở trình duyệt.")
             except Exception as e:
-                logger.warning("[Interceptor] Loi tim video YouTube: %s", e)
-            # Fallback
+                logger.warning(f"[Interceptor] Lỗi lấy video YouTube qua yt-dlp: {e}")
+                
+            # FALLBACK: Lách Zero-Dependency
             webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}")
         threading.Thread(target=_worker, daemon=True, name="YouTubeAutoPlay").start()

@@ -79,7 +79,6 @@ class QdrantManager:
     def _get_model(self) -> SentenceTransformer:
         """Lazy-init model embedding để chỉ tải khi cần thiết."""
         if self._model is None:
-            logger.info(f"[Qdrant] Đang tải model embedding: {EMBEDDING_MODEL_NAME}")
             self._model = SentenceTransformer(EMBEDDING_MODEL_NAME)
             logger.info("[Qdrant] Model embedding đã sẵn sàng.")
         return self._model
@@ -110,9 +109,12 @@ class QdrantManager:
                     if self._client:
                         self._client.close()
                         self._client = None
-                    import shutil
                     if os.path.exists(QDRANT_PATH):
-                        shutil.rmtree(QDRANT_PATH)
+                        from datetime import datetime
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        backup_path = f"{QDRANT_PATH}_backup_{timestamp}"
+                        os.rename(QDRANT_PATH, backup_path)
+                        logger.warning(f"[Qdrant] Đã backup CSDL cũ ra: {backup_path}")
                     os.makedirs(QDRANT_PATH, exist_ok=True)
                     self._client = QdrantClient(path=QDRANT_PATH)
                     client = self._client

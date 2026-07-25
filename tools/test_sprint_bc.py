@@ -8,10 +8,10 @@ def main():
     
     qdrant = QdrantManager()
     
-    query = "các tính chất để đánh giá câu trả lời của ragas là gì"
+    query = "các tính chất của ragas"
     print(f"Câu hỏi: '{query}'\n")
     
-    results = qdrant.search(query, top_k=6)
+    results = qdrant.search(query, top_k=4)
     
     for i, res in enumerate(results):
         print(f"--- Top {i+1} (Score: {res['score']}) ---")

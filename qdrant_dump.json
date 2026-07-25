@@ -1,0 +1,690 @@
+[
+    {
+        "chunk_id": "033b60c0-ef8c-407e-b242-bf80d335a0d9",
+        "chunk_type": "parent",
+        "parent_id": null,
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 5,
+        "text_preview": "Faith. Ans. Rel. Cont. Rel.  GPT Score GPT Ranking  Table 1: Agreement with human annotators in pairwise comparisons of faithfulness, answer relevance..."
+    },
+    {
+        "chunk_id": "07323b09-411a-4fe4-8cd9-37080074da6c",
+        "chunk_type": "child",
+        "parent_id": "033b60c0-ef8c-407e-b242-bf80d335a0d9",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 5,
+        "text_preview": "Faith. Ans. Rel. Cont. Rel.  GPT Score GPT Ranking  Table 1: Agreement with human annotators in pairwise comparisons of faithfulness, answer relevance..."
+    },
+    {
+        "chunk_id": "0d8804c0-5ef0-46d7-a05c-97c6e5e74c58",
+        "chunk_type": "child",
+        "parent_id": "d38b1994-001e-49c7-a6a0-3053ab484961",
+        "section_title": "Ragas: Automated Evaluation of Retrieval Augmented Generation",
+        "page": 1,
+        "text_preview": "crucially contribute to faster evaluation cycles of RAG architectures, which is especially important given the fast adoption of LLMs.  Introduction  L..."
+    },
+    {
+        "chunk_id": "0ee622a5-abed-4428-a9ff-e442088223f5",
+        "chunk_type": "parent",
+        "parent_id": null,
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 8,
+        "text_preview": "Question Context Answer  Who directed the film Op- penheimer and who stars as J. Robert Oppenheimer in the film?  Oppenheimer is a 2023 biographical t..."
+    },
+    {
+        "chunk_id": "1090c317-528c-4e19-8bb6-ca47c5e0e950",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "of artificial general intelli- gence: Early experiments with gpt-4. arXiv preprint arXiv:2303.12712 .  Jacob Devlin, Ming-Wei Chang, Kenton Lee, and  ..."
+    },
+    {
+        "chunk_id": "11341f24-29c0-4bd3-b104-faa01b608fe8",
+        "chunk_type": "child",
+        "parent_id": "6b2b720d-b813-483b-a409-15c71ee70c75",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 2,
+        "text_preview": "LLMs. However, care is needed with this approach, as the order in which the answers is presented can influence the result ( Wang et al. , 2023b ).  In..."
+    },
+    {
+        "chunk_id": "1683e0a6-9afe-40bc-bbbf-1174744186db",
+        "chunk_type": "child",
+        "parent_id": "8d638627-d3e1-49be-8ded-972123a753e5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 4,
+        "text_preview": "inclusion of redundant information. To estimate context relevance, given a question q and its con- text c ( q ) , the LLM extracts a subset of sentenc..."
+    },
+    {
+        "chunk_id": "171cb074-219c-4c17-8f6f-6889f1f95607",
+        "chunk_type": "child",
+        "parent_id": "1b4656d3-e7ff-440b-8389-7902ec06e015",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 7,
+        "text_preview": "tion Processing Systems 2021, NeurIPS 2021, De- cember 6-14, 2021, virtual , pages 27263–27277.  Tianhua Zhang, Hongyin Luo, Yung-Sung Chuang, Wei  Fa..."
+    },
+    {
+        "chunk_id": "1a44c6bb-250a-463b-9139-e3e672456222",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "Survey of halluci- nation in natural language generation. ACM Comput- ing Surveys , 55(12):1–38.  Saurav Kadavath, Tom Conerly, Amanda Askell, Tom  He..."
+    },
+    {
+        "chunk_id": "1a6efd10-58b0-405b-ab6a-a2cbae73ad20",
+        "chunk_type": "child",
+        "parent_id": "8d638627-d3e1-49be-8ded-972123a753e5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 4,
+        "text_preview": "answers was the most faithful (i.e. the standard one or the one generated without context), given the question and corresponding Wikipedia page.  Answ..."
+    },
+    {
+        "chunk_id": "1b4656d3-e7ff-440b-8389-7902ec06e015",
+        "chunk_type": "parent",
+        "parent_id": null,
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 7,
+        "text_preview": "Ori Ram, Yoav Levine, Itay Dalmedigos, Dor Muhlgay,  Amnon Shashua, Kevin Leyton-Brown, and Yoav Shoham. 2023. In-context retrieval-augmented lan- gua..."
+    },
+    {
+        "chunk_id": "1f8219d0-48f0-48cf-912b-df14792bd034",
+        "chunk_type": "child",
+        "parent_id": "8d638627-d3e1-49be-8ded-972123a753e5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 4,
+        "text_preview": "ing candidate sentences you’re not al- lowed to make any changes to sentences from given context.  The context relevance score is then computed as:  n..."
+    },
+    {
+        "chunk_id": "23dcdc14-ef94-427f-8420-691fbd182b7a",
+        "chunk_type": "child",
+        "parent_id": "033b60c0-ef8c-407e-b242-bf80d335a0d9",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 5,
+        "text_preview": "Given an question and answer, rank each answer based on Answer Rele- vancy. question : [question] answer 1 : [answer 1] answer 2 : [answer 2]  The res..."
+    },
+    {
+        "chunk_id": "25158164-be10-41a1-8b24-ed0cc1c6bc45",
+        "chunk_type": "child",
+        "parent_id": "033b60c0-ef8c-407e-b242-bf80d335a0d9",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 5,
+        "text_preview": "context sufficiently focused). To support the devel- opment of such a framework, we have introduced WikiEval , a dataset which human judgements of  th..."
+    },
+    {
+        "chunk_id": "286d8000-e99e-46a4-82ff-203223b773a6",
+        "chunk_type": "child",
+        "parent_id": "6b2b720d-b813-483b-a409-15c71ee70c75",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 2,
+        "text_preview": "While the approach performs well, the need to access the hidden states of the model makes it unsuitable for systems that access LLMs through an API.  ..."
+    },
+    {
+        "chunk_id": "2a310f7f-b99c-4fb9-9270-092c26a9d664",
+        "chunk_type": "child",
+        "parent_id": "1b4656d3-e7ff-440b-8389-7902ec06e015",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 7,
+        "text_preview": "Jie Zhou. 2023a. Is chatgpt a good NLG evaluator? A preliminary study . CoRR , abs/2303.04048.  Peiyi Wang, Lei Li, Liang Chen, Dawei Zhu, Binghuai  L..."
+    },
+    {
+        "chunk_id": "2b358dfd-d296-455b-96f0-26bb2e4edc42",
+        "chunk_type": "child",
+        "parent_id": "c9c8fdb3-03cc-47f6-8aca-433474c0c1cd",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 3,
+        "text_preview": "less effective in exploiting that context, especially for information that is pro- vided in the middle of the context passage ( Liu et al. , 2023 ).  ..."
+    },
+    {
+        "chunk_id": "2bbcf7d4-4006-4bdc-b0bc-68072bdb484e",
+        "chunk_type": "child",
+        "parent_id": "6b2b720d-b813-483b-a409-15c71ee70c75",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 2,
+        "text_preview": "the gen- erated answer given the reference) and recall (esti- mated as the probability of generating the reference given the generated answer).  Evalu..."
+    },
+    {
+        "chunk_id": "2da0d949-6022-46f5-8d13-e5ec2b4184f8",
+        "chunk_type": "child",
+        "parent_id": "0ee622a5-abed-4428-a9ff-e442088223f5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 8,
+        "text_preview": "Question Context Answer  Who directed the film Op- penheimer and who stars as J. Robert Oppenheimer in the film?..."
+    },
+    {
+        "chunk_id": "30b8647e-cbba-4eaf-9e95-6f37c7d6c0f4",
+        "chunk_type": "child",
+        "parent_id": "c9c8fdb3-03cc-47f6-8aca-433474c0c1cd",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 3,
+        "text_preview": "s i can be inferred from c ( q ) using a verification function v ( s i , c ( q )) . This verification step is carried out using the following prompt: ..."
+    },
+    {
+        "chunk_id": "343194fe-6736-47bb-bd0e-cfb4a385f452",
+        "chunk_type": "child",
+        "parent_id": "d38b1994-001e-49c7-a6a0-3053ab484961",
+        "section_title": "Ragas: Automated Evaluation of Retrieval Augmented Generation",
+        "page": 1,
+        "text_preview": "a framework can crucially contribute to faster evaluation cycles of RAG architectures, which is especially important given the fast adoption of LLMs. ..."
+    },
+    {
+        "chunk_id": "412c5d80-e4bb-46ad-99d6-6097a0dded74",
+        "chunk_type": "legacy",
+        "parent_id": null,
+        "section_title": "",
+        "page": 2,
+        "text_preview": "MiniLM-L12-v2 is a multilingual embedding model for cross-lingual search...."
+    },
+    {
+        "chunk_id": "42542234-b501-4284-9b34-388edb4dfb71",
+        "chunk_type": "child",
+        "parent_id": "033b60c0-ef8c-407e-b242-bf80d335a0d9",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 5,
+        "text_preview": "of the considered quality metric. For instance, for evaluating answer relevance, we used the following prompt:  Answer Relevancy measures the degree  ..."
+    },
+    {
+        "chunk_id": "461ac327-a796-45e2-b702-c0491698228e",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "Eli Tran-Johnson, Scott Johnston, Sheer El Showk, Andy Jones, Nelson Elhage, Tristan Hume, Anna Chen, Yuntao Bai, Sam Bowman, Stanislav Fort, Deep  Ga..."
+    },
+    {
+        "chunk_id": "47715e7c-3c23-42a7-a347-654ee3a0842c",
+        "chunk_type": "child",
+        "parent_id": "033b60c0-ef8c-407e-b242-bf80d335a0d9",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 5,
+        "text_preview": "by the human annotators. We report the results in terms of ac- curacy (i.e. the fraction of instances on which the model agrees with the annotators). ..."
+    },
+    {
+        "chunk_id": "5613b593-d181-4203-bdfe-dafc928afe60",
+        "chunk_type": "child",
+        "parent_id": "033b60c0-ef8c-407e-b242-bf80d335a0d9",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 5,
+        "text_preview": "then asks to score the given answer/context in line with that definition. For instance, for evaluating faithfulness, we used the following prompt:  Fa..."
+    },
+    {
+        "chunk_id": "5ab38d15-13ff-4766-b1ee-b1226334f831",
+        "chunk_type": "child",
+        "parent_id": "c9c8fdb3-03cc-47f6-8aca-433474c0c1cd",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 3,
+        "text_preview": "q , as the cosine between the correspond- ing embeddings. The answer relevance score, AR , for question q is then computed as:  sim ( q, q i )  This m..."
+    },
+    {
+        "chunk_id": "5d8cc20a-692e-4de0-842f-a5b95bc51bad",
+        "chunk_type": "child",
+        "parent_id": "c9c8fdb3-03cc-47f6-8aca-433474c0c1cd",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 3,
+        "text_preview": "In our implementation and experiments, all prompts are evaluated using the gpt-3.5-turbo-16k model, which is available through the OpenAI API 2 .  Fai..."
+    },
+    {
+        "chunk_id": "5dcab2b8-b78d-4562-a11d-a7a5de0f6943",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "M. Mitchell. 2023. The inter-  nal state of an LLM knows when its lying . CoRR , abs/2304.13734.  Sebastian Borgeaud, Arthur Mensch, Jordan Hoffmann, ..."
+    },
+    {
+        "chunk_id": "5e330ca0-a02c-4ce0-8596-ca56f8e3fc4e",
+        "chunk_type": "child",
+        "parent_id": "033b60c0-ef8c-407e-b242-bf80d335a0d9",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 5,
+        "text_preview": "met- rics proposed in Section 3 and the human assess- ments from the proposed WikiEval dataset. Each WikiEval instance requires the model to compare  ..."
+    },
+    {
+        "chunk_id": "61af8408-dbb3-4de1-86f0-d1979a59065a",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "References  Amos Azaria and Tom M. Mitchell. 2023. The inter-  nal state of an LLM knows when its lying . CoRR , abs/2304.13734.  Sebastian Borgeaud, ..."
+    },
+    {
+        "chunk_id": "61ca1668-9462-4969-8232-2eeefe70e7c9",
+        "chunk_type": "child",
+        "parent_id": "6b2b720d-b813-483b-a409-15c71ee70c75",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 2,
+        "text_preview": "widely used frameworks for building RAG solutions, thus enabling devel- opers to easily integrate Ragas into their standard workflow.  Related Work  E..."
+    },
+    {
+        "chunk_id": "62f97e21-192b-4b98-b419-5edc96223328",
+        "chunk_type": "child",
+        "parent_id": "6b2b720d-b813-483b-a409-15c71ee70c75",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 2,
+        "text_preview": "ent methods are needed. SelfCheckGPT ( Manakul et al. , 2023 ) addresses this problem by instead sam- pling multiple answers. Their core idea is that ..."
+    },
+    {
+        "chunk_id": "675fafae-bc1a-4b67-bcfe-dae4e4585144",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "Machine Learning, ICML 2022, 17-23 July 2022, Bal- timore, Maryland, USA , volume 162 of Proceedings of Machine Learning Research , pages 2206–2240.  ..."
+    },
+    {
+        "chunk_id": "68254577-bc82-4e88-9365-c6990dae1371",
+        "chunk_type": "child",
+        "parent_id": "c9c8fdb3-03cc-47f6-8aca-433474c0c1cd",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 3,
+        "text_preview": "estimate answer relevance, for the given answer a s ( q ) , we prompt the LLM to generate n potential questions q i based on a s ( q ) , as follows:  ..."
+    },
+    {
+        "chunk_id": "6b2b720d-b813-483b-a409-15c71ee70c75",
+        "chunk_type": "parent",
+        "parent_id": null,
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 2,
+        "text_preview": "of retrieval augmented generation systems. We fo- cus on settings where reference answers may not be available, and where we want to estimate differen..."
+    },
+    {
+        "chunk_id": "6eff13e9-e732-477b-ac12-8b2c31c0f87e",
+        "chunk_type": "child",
+        "parent_id": "8d638627-d3e1-49be-8ded-972123a753e5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 4,
+        "text_preview": "context.  The context relevance score is then computed as:  number of extracted sentences total number of sentences in c ( q )  The WikiEval Dataset  ..."
+    },
+    {
+        "chunk_id": "7314e79e-03a5-4cac-b789-49528e5ff174",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "of the 57th Annual Meeting of the Association for Computational Linguistics , pages 6086–6096.  Patrick S. H. Lewis, Ethan Perez, Aleksandra Pik-  tus..."
+    },
+    {
+        "chunk_id": "750007aa-2104-4374-8996-9ac43da6414a",
+        "chunk_type": "child",
+        "parent_id": "8d638627-d3e1-49be-8ded-972123a753e5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 4,
+        "text_preview": "95% of cases. For answer relevance, they agreed in around 90% of the cases. Disagreements were resolved after a discussion between the anno- tators.  ..."
+    },
+    {
+        "chunk_id": "7616ddd0-3302-4676-b14c-c606bd65a021",
+        "chunk_type": "child",
+        "parent_id": "033b60c0-ef8c-407e-b242-bf80d335a0d9",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 5,
+        "text_preview": "observed that ChatGPT often struggles with the task of selecting the sen- tences from the context that are crucial, especially for longer contexts.  C..."
+    },
+    {
+        "chunk_id": "774520a8-09b7-4693-b70a-52cb76c8fdbb",
+        "chunk_type": "child",
+        "parent_id": "d38b1994-001e-49c7-a6a0-3053ab484961",
+        "section_title": "Ragas: Automated Evaluation of Retrieval Augmented Generation",
+        "page": 1,
+        "text_preview": "; Shi et al. , 2023 ), thus making it possible to use retrieval- augmented strategies in combination with LLMs that are only available through APIs.  ..."
+    },
+    {
+        "chunk_id": "7871d98a-a670-4ff5-aa3c-c44cb012fc16",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "and Jared  Kaplan. 2022. Language models (mostly) know what they know . CoRR , abs/2207.05221.  Nikhil Kandpal, Haikang Deng, Adam Roberts, Eric  Wall..."
+    },
+    {
+        "chunk_id": "79b79070-a4d8-4e95-b5f1-0e1ffa1dd181",
+        "chunk_type": "child",
+        "parent_id": "033b60c0-ef8c-407e-b242-bf80d335a0d9",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 5,
+        "text_preview": "selecting the sen- tences from the context that are crucial, especially for longer contexts.  Conclusions  We have highlighted the need for automated ..."
+    },
+    {
+        "chunk_id": "839b410f-e0a8-4610-85ea-da1fc2282f43",
+        "chunk_type": "child",
+        "parent_id": "d38b1994-001e-49c7-a6a0-3053ab484961",
+        "section_title": "Ragas: Automated Evaluation of Retrieval Augmented Generation",
+        "page": 1,
+        "text_preview": "task, but usually only datasets with short extractive an- swers are considered, which may not be represen- tative of how the system will be used.  To ..."
+    },
+    {
+        "chunk_id": "84d8d400-aa73-4784-bac8-b48de2be1cf5",
+        "chunk_type": "child",
+        "parent_id": "0ee622a5-abed-4428-a9ff-e442088223f5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 8,
+        "text_preview": "and thereby ushering in the Atomic Age. Cillian Murphy stars as Oppenheimer, with Emily Blunt as Oppenheimer’s wife Katherine \"Kitty\" Oppenheimer.  Hi..."
+    },
+    {
+        "chunk_id": "852e4ba2-9930-4fed-9405-1965bfbf73a3",
+        "chunk_type": "child",
+        "parent_id": "8d638627-d3e1-49be-8ded-972123a753e5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 4,
+        "text_preview": "when given the corresponding introduc- tory section as context, using the following prompt:  Answer the question using the informa-  tion from the giv..."
+    },
+    {
+        "chunk_id": "86e1bb74-c547-4e58-831f-c7a4d0c1e431",
+        "chunk_type": "child",
+        "parent_id": "1b4656d3-e7ff-440b-8389-7902ec06e015",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 7,
+        "text_preview": "Mohit Iyyer. 2023c. KNN-LM does not improve open-ended text generation . CoRR , abs/2305.14625.  Weizhe Yuan, Graham Neubig, and Pengfei Liu. 2021.  B..."
+    },
+    {
+        "chunk_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "chunk_type": "parent",
+        "parent_id": null,
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "References  Amos Azaria and Tom M. Mitchell. 2023. The inter-  nal state of an LLM knows when its lying . CoRR , abs/2304.13734.  Sebastian Borgeaud, ..."
+    },
+    {
+        "chunk_id": "8d638627-d3e1-49be-8ded-972123a753e5",
+        "chunk_type": "parent",
+        "parent_id": null,
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 4,
+        "text_preview": "inclusion of redundant information. To estimate context relevance, given a question q and its con- text c ( q ) , the LLM extracts a subset of sentenc..."
+    },
+    {
+        "chunk_id": "8da7cdc2-ff8e-471f-a508-07a704f47540",
+        "chunk_type": "child",
+        "parent_id": "0ee622a5-abed-4428-a9ff-e442088223f5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 8,
+        "text_preview": "high and low faithfulness.  Question Answer  When is the scheduled launch date and time for the PSLV-C56 mission, and where will it be launched from? ..."
+    },
+    {
+        "chunk_id": "92cfae65-74a5-4496-969d-a2d1acd310ea",
+        "chunk_type": "child",
+        "parent_id": "c9c8fdb3-03cc-47f6-8aca-433474c0c1cd",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 3,
+        "text_preview": "q )) . The aim of this step is to decompose longer sentences into shorter and more focused assertions. We use the following prompt for this step 3 :  ..."
+    },
+    {
+        "chunk_id": "949b27f4-6599-4b5e-a429-7da06e0abdc9",
+        "chunk_type": "child",
+        "parent_id": "0ee622a5-abed-4428-a9ff-e442088223f5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 8,
+        "text_preview": "not been provided.The PSLV-C56 mission is an important space mission for India. It aims to launch a satellite into orbit to study weather patterns.  T..."
+    },
+    {
+        "chunk_id": "9c94f8bc-3431-4e92-b4be-b4d2ed4a3755",
+        "chunk_type": "child",
+        "parent_id": "c9c8fdb3-03cc-47f6-8aca-433474c0c1cd",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 3,
+        "text_preview": "we include a demonstration as part of the prompt. This demonstration is not explicitly shown in the listing of the prompts throughout this paper.  in ..."
+    },
+    {
+        "chunk_id": "a347c4c3-61ac-4d32-bca3-efa619529d1d",
+        "chunk_type": "child",
+        "parent_id": "8d638627-d3e1-49be-8ded-972123a753e5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 4,
+        "text_preview": "50 pages, we then asked ChatGPT to suggest a question that can be answered based on the introductory section of the page, using the following prompt: ..."
+    },
+    {
+        "chunk_id": "a62062e9-bbcd-49c3-a51d-981fc89c3656",
+        "chunk_type": "child",
+        "parent_id": "6b2b720d-b813-483b-a409-15c71ee70c75",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 2,
+        "text_preview": "of retrieval augmented generation systems. We fo- cus on settings where reference answers may not be available, and where we want to estimate differen..."
+    },
+    {
+        "chunk_id": "a7d1dbf1-6498-4a08-acba-ba94ee58d47d",
+        "chunk_type": "child",
+        "parent_id": "c9c8fdb3-03cc-47f6-8aca-433474c0c1cd",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 3,
+        "text_preview": "we usually do not have access to human-annotated datasets or reference answers. We therefore fo- cus on metrics that are fully self-contained and refe..."
+    },
+    {
+        "chunk_id": "b3ee38d5-1e22-4af7-ab09-26e5ec039f25",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "Composing retrieval and language models for knowledge-intensive NLP . CoRR , abs/2212.14024.  Kenton Lee, Ming-Wei Chang, and Kristina Toutanova.  201..."
+    },
+    {
+        "chunk_id": "b4a9da94-23a7-4d1d-bc96-332633b8f054",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "Papers) , pages 4171–4186, Minneapolis, Minnesota. Association for Computational Linguistics.  Jinlan Fu, See-Kiong Ng, Zhengbao Jiang, and Pengfei  L..."
+    },
+    {
+        "chunk_id": "b7eca490-b5a0-4b24-82f4-f293996e1659",
+        "chunk_type": "child",
+        "parent_id": "0ee622a5-abed-4428-a9ff-e442088223f5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 8,
+        "text_preview": "showing answers with high and low answer relevance.  Question Context  When was the Chimnabai Clock Tower completed, and who was it named af-  High co..."
+    },
+    {
+        "chunk_id": "be16d143-1aa3-47e8-938f-42709629a54d",
+        "chunk_type": "child",
+        "parent_id": "8d638627-d3e1-49be-8ded-972123a753e5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 4,
+        "text_preview": "question: [question]  We then asked human annotators to compare this  answer, and indicate which of the two answers had the highest answer relevance. ..."
+    },
+    {
+        "chunk_id": "c2c42aa1-576e-4703-a4d8-f56acfd5d807",
+        "chunk_type": "child",
+        "parent_id": "1b4656d3-e7ff-440b-8389-7902ec06e015",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 7,
+        "text_preview": "Joint Conference on Natural Language Pro- cessing (EMNLP-IJCNLP) , pages 563–578, Hong Kong, China. Association for Computational Lin- guistics.  Exam..."
+    },
+    {
+        "chunk_id": "c43a2ca0-a86c-44ce-8c3e-13bdafc28834",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "model pre-training. In International confer- ence on machine learning , pages 3929–3938. PMLR.  Ziwei Ji, Nayeon Lee, Rita Frieske, Tiezheng Yu, Dan  ..."
+    },
+    {
+        "chunk_id": "c48168ce-c936-4448-87f5-c1181187333e",
+        "chunk_type": "child",
+        "parent_id": "0ee622a5-abed-4428-a9ff-e442088223f5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 8,
+        "text_preview": "Oppenheimer is a 2023 biographical thriller film written and directed by Christopher Nolan. Based on the 2005 biography American Prometheus by Kai Bir..."
+    },
+    {
+        "chunk_id": "c7a8dd0e-be5a-4f60-bbb0-157dcf395390",
+        "chunk_type": "child",
+        "parent_id": "d38b1994-001e-49c7-a6a0-3053ab484961",
+        "section_title": "Ragas: Automated Evaluation of Retrieval Augmented Generation",
+        "page": 1,
+        "text_preview": "limitations. First, LLMs are not able to answer questions about events that have happened after they were trained. Second, even the largest models  st..."
+    },
+    {
+        "chunk_id": "c8ca2179-cad5-4479-a426-29c6e543499e",
+        "chunk_type": "child",
+        "parent_id": "d38b1994-001e-49c7-a6a0-3053ab484961",
+        "section_title": "Ragas: Automated Evaluation of Retrieval Augmented Generation",
+        "page": 1,
+        "text_preview": "Shahul Es † , Jithin James † , Luis Espinosa-Anke ∗♢ , Steven Schockaert ∗  † Exploding Gradients ∗ CardiffNLP, Cardiff University, United Kingdom  ♢ ..."
+    },
+    {
+        "chunk_id": "c9c8fdb3-03cc-47f6-8aca-433474c0c1cd",
+        "chunk_type": "parent",
+        "parent_id": null,
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 3,
+        "text_preview": "we usually do not have access to human-annotated datasets or reference answers. We therefore fo- cus on metrics that are fully self-contained and refe..."
+    },
+    {
+        "chunk_id": "c9efb35d-e270-4f4f-862a-8fb53f91a788",
+        "chunk_type": "child",
+        "parent_id": "1b4656d3-e7ff-440b-8389-7902ec06e015",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 7,
+        "text_preview": "Language Processing (EMNLP) , pages 5418–5426, Online. Association for Computational Linguistics.  Weijia Shi, Sewon Min, Michihiro Yasunaga, Minjoon ..."
+    },
+    {
+        "chunk_id": "cd649e9f-5844-4b61-9c2e-1573994e815e",
+        "chunk_type": "child",
+        "parent_id": "8d638627-d3e1-49be-8ded-972123a753e5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 4,
+        "text_preview": "as context, using the following prompt:  Answer the question using the informa-  tion from the given context. question: [question] context: [context] ..."
+    },
+    {
+        "chunk_id": "cf1bd698-4470-4c2c-bac3-14b7363a0f69",
+        "chunk_type": "legacy",
+        "parent_id": null,
+        "section_title": "",
+        "page": 1,
+        "text_preview": "GraphRAG combines knowledge graphs and vector search for accurate retrieval...."
+    },
+    {
+        "chunk_id": "cfab11df-144f-4513-a51f-848eed9284c1",
+        "chunk_type": "legacy",
+        "parent_id": null,
+        "section_title": "",
+        "page": 3,
+        "text_preview": "Neo4j stores entities and relationships as graph nodes and edges...."
+    },
+    {
+        "chunk_id": "d38b1994-001e-49c7-a6a0-3053ab484961",
+        "chunk_type": "parent",
+        "parent_id": null,
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 1,
+        "text_preview": "## Ragas: Automated Evaluation of Retrieval Augmented Generation  Shahul Es † , Jithin James † , Luis Espinosa-Anke ∗♢ , Steven Schockaert ∗  † Explod..."
+    },
+    {
+        "chunk_id": "d50d1113-6049-4e7b-b024-2f4d8483336e",
+        "chunk_type": "child",
+        "parent_id": "0ee622a5-abed-4428-a9ff-e442088223f5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 8,
+        "text_preview": "it was a stoppage for horse drawn trams. The clock tower was erected at the cost of 25,000 (equivalent to 9.2 million or USD 120,000 in 2023).  Table ..."
+    },
+    {
+        "chunk_id": "dcac290b-99dc-4df3-b5cc-a00178f1434f",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "language models . In 8th International Conference on Learning Representations, ICLR 2020, Addis Ababa, Ethiopia, April 26-30, 2020 . OpenReview.net.  ..."
+    },
+    {
+        "chunk_id": "ded8c571-dc4c-4e48-b590-6acd385f984a",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "on Neural Information Processing Systems 2020, NeurIPS 2020, December 6-12, 2020, virtual .  Junyi Li, Xiaoxue Cheng, Wayne Xin Zhao, Jian-Yun  Nie, a..."
+    },
+    {
+        "chunk_id": "e563a344-cf35-4bcd-8819-4c45e36962a1",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "Petroni, and Percy Liang. 2023. Lost in the middle: How language models use long contexts .  Alex Mallen, Akari Asai, Victor Zhong, Rajarshi Das,  Dan..."
+    },
+    {
+        "chunk_id": "e6987b0d-665d-4ff3-b84e-681e79545403",
+        "chunk_type": "child",
+        "parent_id": "c9c8fdb3-03cc-47f6-8aca-433474c0c1cd",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 3,
+        "text_preview": "each statement in order at the end in the given format. Do not deviate from the specified format. statement: [statement 1] statement: [statement n ]  ..."
+    },
+    {
+        "chunk_id": "edfac582-435d-4993-a3b9-85606c1fde69",
+        "chunk_type": "child",
+        "parent_id": "8a151c06-2200-484a-adbe-60b99bed9a54",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 6,
+        "text_preview": "1: Long Papers) , pages 9802–9822, Toronto, Canada. Association for Computational Linguistics.  Potsawee Manakul, Adian Liusie, and Mark J. F. Gales. ..."
+    },
+    {
+        "chunk_id": "efd0ed6c-173d-4cda-943c-d6d9d636208e",
+        "chunk_type": "child",
+        "parent_id": "c9c8fdb3-03cc-47f6-8aca-433474c0c1cd",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 3,
+        "text_preview": "as F = | V |  | S | , where | V | is the number of statements that were supported according to the LLM and | S | is the total number of statements.  A..."
+    },
+    {
+        "chunk_id": "f089bc02-1df1-451c-969a-43de529efb8b",
+        "chunk_type": "child",
+        "parent_id": "1b4656d3-e7ff-440b-8389-7902ec06e015",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 7,
+        "text_preview": "Ori Ram, Yoav Levine, Itay Dalmedigos, Dor Muhlgay,  Amnon Shashua, Kevin Leyton-Brown, and Yoav Shoham. 2023. In-context retrieval-augmented lan- gua..."
+    },
+    {
+        "chunk_id": "f4c34bce-242f-4d49-986c-47f7cd92ce1d",
+        "chunk_type": "child",
+        "parent_id": "8d638627-d3e1-49be-8ded-972123a753e5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 4,
+        "text_preview": "q and its con- text c ( q ) , the LLM extracts a subset of sentences, S ext , from c ( q ) that are crucial to answer q , using the following prompt: ..."
+    },
+    {
+        "chunk_id": "f6e9eee6-b4bc-42c7-838e-98673f1ef0c0",
+        "chunk_type": "child",
+        "parent_id": "6b2b720d-b813-483b-a409-15c71ee70c75",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 2,
+        "text_preview": "we can expect that different samples will tend to be semantically similar, whereas this is less likely to be the case for hallucinated answers.  Autom..."
+    },
+    {
+        "chunk_id": "f76b4245-0075-4d00-910f-5e1481e6c418",
+        "chunk_type": "child",
+        "parent_id": "033b60c0-ef8c-407e-b242-bf80d335a0d9",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 5,
+        "text_preview": "context should be penalized. Given an answer and context, assign a score for faithfulness in the range 0-10. context : [context] answer : [answer]  Ti..."
+    },
+    {
+        "chunk_id": "f7acced7-24d5-4a67-bdf7-44f8cf7d2039",
+        "chunk_type": "child",
+        "parent_id": "8d638627-d3e1-49be-8ded-972123a753e5",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 4,
+        "text_preview": "https://huggingface.co/datasets/ explodinggradients/WikiEval  5 That is, beyond the reported training cutoff of the model we used in our experiments. ..."
+    },
+    {
+        "chunk_id": "f7f9d265-f4ec-4a8e-923f-7af4ef1587d7",
+        "chunk_type": "child",
+        "parent_id": "6b2b720d-b813-483b-a409-15c71ee70c75",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 2,
+        "text_preview": "approaches rely on linking the generated responses to facts from an external knowledge base ( Min et al. , 2023 ), but this is not always possible.  Y..."
+    },
+    {
+        "chunk_id": "fdb87a7d-1997-4b58-83c1-529ffbaa23b2",
+        "chunk_type": "child",
+        "parent_id": "1b4656d3-e7ff-440b-8389-7902ec06e015",
+        "section_title": "arXiv:2309.15217v2  [cs.CL]  28 Apr 2025",
+        "page": 7,
+        "text_preview": "with BERT . In 8th International Conference on Learning Representations, ICLR 2020, Addis Ababa, Ethiopia, April 26-30, 2020 . OpenRe- view.net.  Wei ..."
+    },
+    {
+        "chunk_id": "ff7653ea-1e66-4179-8033-12ca4b630311",
+        "chunk_type": "child",
+        "parent_id": "d38b1994-001e-49c7-a6a0-3053ab484961",
+        "section_title": "Ragas: Automated Evaluation of Retrieval Augmented Generation",
+        "page": 1,
+        "text_preview": "University, United Kingdom  ♢ AMPLYFI, United Kingdom shahules786@gmail.com,jamesjithin97@gmail.com  {espinosa-ankel,schockaerts1}@cardiff.ac.uk  We i..."
+    }
+]

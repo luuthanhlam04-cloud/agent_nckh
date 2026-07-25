@@ -23,12 +23,32 @@ Tài liệu này hướng dẫn cách khởi chạy, kiểm thử các tính nă
 | **2** | Test "Chen Ngang" | Đang nghe câu chào, bạn gõ liền phím `a` | AI lập tức dừng nói (Ngắt âm thanh hoàn hảo). |
 | **3** | Test Lõi LLM (No API) | Gõ thử *"Chào bạn"* -> Bấm `Enter` | Hệ thống báo lỗi "Core AI chưa sẵn sàng. Kiểm tra API Keys...". App **không bị crash hay văng!** |
 | **4** | Thu Gọn UI | Bấm `ESC` khi đang mở bảng | Giao diện thu gọn và chạy ngầm dưới hệ thống. |
-| **5** | Test Lõi Giọng Nói Local | Bấm `Ctrl + Shift + Space` | Nghe lời chào -> Im lặng khóa mic -> Lời chào xong -> Mở mic (Có chữ "Đang nghe"). |
-| **6** | Nói thử (Whisper) | Đọc to: *"Hôm nay thứ mấy"* vào Micro | Đợi 2-3s (Whisper chạy nội bộ bằng CPU). Thanh lệnh sẽ tự động hiện ra dòng chữ bạn vừa đọc. *(Do chưa cấu hình API nên sau khi dịch ra chữ, đoạn hội thoại sẽ dừng lại)*. |
+| **5** | Test Giọng Nói (PTT - Mặc định) | **Giữ** `Alt + Space` rồi nói, **nhả phím** khi nói xong | Ô lệnh hiện 🔴 → Nhả phím → Whisper giải mã → Hiện chữ vừa nói. **Không còn bị kích hoạt khi chưa nói!** |
+| **6** | Test Giọng Nói (VAD - Tự động) | Thêm `VOICE_MODE=vad` vào `.env`, bấm `Alt + Space` 1 lần | Phát lời chào → Mở mic tự động → Nói xong im lặng 1.2s → Whisper giải mã. |
+
 
 ---
 
-## 3. TÙY CHỈNH MÔ HÌNH NHẬN DIỆN GIỌNG NÓI (WHISPER)
+## 3. TỔNG HỢP CÁC TÍNH NĂNG VÀ CÂU LỆNH HỖ TRỢ (SEMANTIC INTERCEPTOR)
+
+Hệ thống sử dụng **Bộ Đánh chặn Ngữ nghĩa (Semantic Interceptor)** để phân loại ý định người dùng bằng mô hình e5-base, qua đó xử lý cực nhanh (gần 0 giây, không tốn API) các lệnh hệ thống.
+
+| Nhóm Tính Năng | Ý Định (Intent) | Lệnh mẫu / Câu hỏi (Ví dụ) | Hành động thực hiện |
+| :--- | :--- | :--- | :--- |
+| **Tra cứu thời gian** | `TIME_QUERY` | "Bây giờ là mấy giờ?", "Hôm nay thứ mấy?" | Trả lời ngày giờ hệ thống ngay lập tức qua text hoặc giọng nói. |
+| **Giao tiếp cơ bản** | `GREETING`, `SMALL_TALK` | "Xin chào", "Thời tiết hôm nay", "Giá vàng" | Chào hỏi, trò chuyện nhỏ và trả lời các thông tin nhanh gọn. |
+| **Điều khiển Ứng dụng**| `OS_APP`, `OS_ZALO` | "Mở Word", "Mở Chrome", "Mở VSCode" | Tự động khởi chạy các phần mềm trên máy tính. |
+| **Giải trí (YouTube)** | `OS_YOUTUBE` | "Mở YouTube", "Phát bài nhạc..." | Tự động tìm kiếm và mở video/nhạc trên trình duyệt. |
+| **Duyệt Web & File** | `OS_WEBSITE`, `OS_EXPLORER`| "Vào facebook", "Truy cập vnexpress", "Mở thư mục" | Truy cập website trực tiếp hoặc mở thư mục hiện tại. |
+| **Trí nhớ dài hạn** | `OBSIDIAN_SAVE` | "Lưu vào ghi chú", "Ghi vào sổ tay" | Lưu trữ tự động nội dung vào Obsidian Vault (Long-term Memory). |
+| **Ép Tìm kiếm Web** | `FORCE_WEB` | "Tìm trên mạng", "Bỏ qua RAG tra google" | Buộc hệ thống dùng DuckDuckGo Search thay vì tìm trong RAG. |
+| **Xuất báo cáo** | `EXPORT_DOCX` | "Xuất báo cáo word", "Tạo file docx" | Khởi tạo file Word (.docx) chuyên nghiệp từ nội dung trao đổi. |
+| **Thao tác Ninja** | `NINJA_COPY`, `NINJA_REPEAT`| "Copy lại câu trả lời", "Đọc lại xem nào" | Sao chép tự động vào clipboard hoặc đọc lại mà không cần hiện UI lớn. |
+| **Hỏi đáp Chuyên sâu** | `RESEARCH_QUERY` | *(Các câu hỏi chuyên môn phức tạp)* | Kích hoạt AI Đa luồng (Hybrid RAG + Neo4j) để sinh câu trả lời RAG. |
+
+---
+
+## 4. TÙY CHỈNH MÔ HÌNH NHẬN DIỆN GIỌNG NÓI (WHISPER)
 
 Hệ thống cung cấp cơ chế linh hoạt (Microservice) để cấu hình mô hình nhận diện giọng nói STT thông qua file `.env`. Mặc định nếu không có khai báo, hệ thống sẽ tự động dùng model **Turbo**.
 
@@ -41,7 +61,7 @@ Hệ thống cung cấp cơ chế linh hoạt (Microservice) để cấu hình m
 
 ---
 
-## 4. THOÁT VÀ ĐÓNG DỰ ÁN AN TOÀN
+## 5. THOÁT VÀ ĐÓNG DỰ ÁN AN TOÀN
 
 Hệ thống được thiết kế chạy ngầm (Daemon). Vì vậy, bạn cần biết cách đóng an toàn để hệ thống xả RAM và trả lại Phím tắt (Hotkeys) cho Windows.
 

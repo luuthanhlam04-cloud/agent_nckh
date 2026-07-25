@@ -63,7 +63,7 @@ class LinterASTVisitor(ast.NodeVisitor):
             if is_slot and not node.name.startswith('_on_'):
                 add_error("Naming Convention (Slot)", f"Hàm slot '{node.name}' phải bắt đầu bằng '_on_'", self.filepath, node.lineno)
 
-        # Rule: GC in transcribe (voice_engine.py)
+        # Rule: GC in transcribe (voice_engine.py) — áp dụng cho bất kỳ STT engine nào
         if self.is_voice_engine and node.name == 'transcribe':
             has_gc = False
             for child in ast.walk(node):
@@ -173,23 +173,8 @@ class LinterASTVisitor(ast.NodeVisitor):
                 if not any(test_kw in self.filename for test_kw in ('test', 'run_tests', 'production_check')):
                     print(f"{WARN} {self.filepath}:{node.lineno} - No Print Rule: print() trong source file (dùng logger thay thế)")
 
-        # Rule: Whisper Lock
-        if self.is_voice_engine:
-            is_whisper = False
-            if isinstance(node.func, ast.Name) and node.func.id == 'WhisperModel':
-                is_whisper = True
-            
-            if is_whisper:
-                locked = False
-                for w_node in self.with_stack:
-                    for item in w_node.items:
-                        ctx = item.context_expr
-                        if isinstance(ctx, ast.Attribute) and '_lock' in ctx.attr:
-                            locked = True
-                        elif isinstance(ctx, ast.Name) and 'lock' in ctx.id.lower():
-                            locked = True
-                if not locked:
-                    add_error("Singleton & GC Enforcer", "Khởi tạo WhisperModel không được bọc trong khối with khóa (lock)", self.filepath, node.lineno)
+        # Rule: Whisper Lock — đã loại bỏ (STT chuyển sang Gemini Cloud API, không còn WhisperModel)
+        # Rule được giữ lại trong code để document lịch sử, không còn trigger FAIL
                     
         self.generic_visit(node)
 
