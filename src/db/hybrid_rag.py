@@ -193,40 +193,8 @@ class QdrantManager:
         logger.info(f"[Qdrant] Đã lưu {len(points)} chunks thành công (bao gồm Parent & Child).")
         return chunk_ids
 
-    def _rerank(self, query: str, candidates: List[Any], top_k: int) -> List[Any]:
-        """
-        [Sprint C] Tái dụng e5-base để rerank bằng cách tính contextual similarity.
-        Không cần load thêm Cross-Encoder, tiết kiệm RAM.
-        """
-        if not candidates:
-            return []
-            
-        model = self._get_model()
-        # Encode query
-        query_vec = torch.tensor(model.encode(f"query: {query}", normalize_embeddings=True))
-        
-        scored_candidates = []
-        for candidate in candidates:
-            text = candidate.payload.get("text", "")
-            # Encode đoạn văn bản có chứa thêm context của câu hỏi
-            combined_text = f"query: {query} passage: {text}"
-            combined_vec = torch.tensor(model.encode(combined_text, normalize_embeddings=True))
-            
-            # Tính cosine similarity
-            score = torch.nn.functional.cosine_similarity(query_vec.unsqueeze(0), combined_vec.unsqueeze(0)).item()
-            # Bọc candidate và score vào tuple (không set trực tiếp vào Pydantic model)
-            scored_candidates.append((score, candidate))
-            
-        # Sắp xếp lại theo điểm rerank
-        scored_candidates.sort(key=lambda x: x[0], reverse=True)
-        # Lấy lại danh sách candidates đã được sắp xếp
-        sorted_candidates = [item[1] for item in scored_candidates[:top_k]]
-        
-        # Bơm điểm rerank vào payload tạm thời để dùng về sau
-        for score, candidate in scored_candidates[:top_k]:
-            candidate.payload["_rerank_score"] = score
-            
-        return sorted_candidates
+    # Đã xóa hàm _rerank (Logic cũ dùng Bi-Encoder ghép chuỗi sai nguyên lý và gây nghẽn cổ chai CPU)
+
 
     def search(self, query: str, top_k: int = 5, filter_source: Optional[str] = None) -> List[Dict]:
         """
@@ -247,32 +215,29 @@ class QdrantManager:
 
         qdrant_filter = Filter(must=conditions)
         
-        # [Sprint C] Lấy nhiều ứng viên hơn (top-20) để rerank
-        raw_top_k = max(20, top_k * 2)
-
         response = client.query_points(
             collection_name=QDRANT_COLLECTION_NAME,
             query=vector,
-            limit=raw_top_k,
+            limit=top_k,
             query_filter=qdrant_filter,
             with_payload=True,
         )
         
-        # [Sprint C] Reranking
-        raw_candidates = response.points
-        if not raw_candidates:
+        # [Sprint C] Không dùng rerank on-the-fly sai lệch nữa. Qdrant cosine search là đủ.
+        # Lấy trực tiếp top_k từ kết quả đã được Qdrant sắp xếp.
+        top_candidates = response.points
+        if not top_candidates:
             return []
             
-        reranked_results = self._rerank(query, raw_candidates, top_k=top_k)
-        
         # [Sprint B] Parent Retrieval Logic
         final_results = []
         parent_ids_to_fetch = set()
         child_mapping = {}  # Lưu thông tin child để biết score và text highlight
         
-        for r in reranked_results:
+        for r in top_candidates:
             pid = r.payload.get("parent_id")
-            rerank_score = r.payload.get("_rerank_score", r.score)
+            rerank_score = r.score
+
             if pid:
                 if pid not in child_mapping:
                     parent_ids_to_fetch.add(pid)
@@ -642,7 +607,7 @@ class HybridRAG:
                     r["source_method"] = "graph"
         except (ValueError, Exception) as e:
             # ValueError: NEO4J_URI trống. Exception: mất kết nối mạng/timeout.
-            logger.warning("[HybridRAG] Neo4j không khả dụng, chỉ dùng vector search: %s", e, exc_info=True)
+            logger.warning("[HybridRAG] Neo4j không khả dụng, chỉ dùng vector search: %s", e)
 
         for r in vector_results:
             r["source_method"] = "vector"
