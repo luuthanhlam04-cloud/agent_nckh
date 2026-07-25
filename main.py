@@ -46,6 +46,9 @@ logger = logging.getLogger("Main")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)  # Suppress missing property warnings
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # --- Tai bien moi truong ---
 load_dotenv()

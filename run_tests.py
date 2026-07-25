@@ -5,7 +5,11 @@ run_tests.py - Test toan bo logic khong can API key
 import sys
 import os
 import asyncio
+from dotenv import load_dotenv
+
 sys.path.insert(0, os.path.dirname(__file__))
+load_dotenv()  # Nạp biến môi trường để kết nối db, loại bỏ lỗi Neo4j/Qdrant
+
 
 PASS = "[OK]"
 FAIL = "[FAIL]"
