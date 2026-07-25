@@ -90,7 +90,7 @@ BORDER_RADIUS      = 15
 BG_ALPHA           = 210    # Do mo nen (0-255), ~82% opacity
 ANIMATION_DURATION = 250    # ms cho animation mo rong/thu gon
 GLOBAL_HOTKEY      = "ctrl+space"
-VOICE_HOTKEY       = "alt+space"    # To hop 2 phim an toan cho Voice
+VOICE_HOTKEY       = "alt+v"        # To hop 2 phim de gõ, an toan khong bi OS Windows chan
 TTS_MAX_CHARS      = 800    # Gioi han ky tu gui cho TTS (~1-2 phut doc)
 TTS_VOICE          = "vi-VN-NamMinhNeural"   # Giong doc tieng Viet Azure
 
@@ -694,11 +694,11 @@ class SpotlightWindow(QWidget):
         self._ai_worker.sig_sentence.connect(self._on_ai_sentence)
         self._ai_worker.sig_finished.connect(self._on_ai_finished)
         self._ai_worker.sig_error.connect(self._on_ai_error)
-        # [CRASH-FIX] Clear Python ref TRUOC deleteLater (ca 2 duong finished va error)
-        self._ai_worker.sig_finished.connect(lambda: setattr(self, '_ai_worker', None))
-        self._ai_worker.sig_finished.connect(self._ai_worker.deleteLater)
-        self._ai_worker.sig_error.connect(lambda: setattr(self, '_ai_worker', None))
-        self._ai_worker.sig_error.connect(self._ai_worker.deleteLater)  # [FIX] Tranh memory leak khi co loi
+        
+        # [CRASH-FIX] Sử dụng signal 'finished' mặc định của QThread để dọn dẹp an toàn
+        # signal 'finished' chỉ emit SAU KHI hàm run() đã return hoàn toàn.
+        self._ai_worker.finished.connect(lambda: setattr(self, '_ai_worker', None))
+        self._ai_worker.finished.connect(self._ai_worker.deleteLater)
         self._ai_worker.start()
         
         # Start TTS Worker in streaming mode
@@ -874,8 +874,10 @@ class SpotlightWindow(QWidget):
         self._cleanup_tts_file()
         self._tts_worker = TTSWorker(parent=self)
         self._tts_worker.sig_chunk_ready.connect(self._on_tts_chunk_ready)
-        self._tts_worker.sig_done.connect(lambda: setattr(self, '_tts_worker', None))
-        self._tts_worker.sig_done.connect(self._tts_worker.deleteLater)
+        
+        # [CRASH-FIX] Sử dụng 'finished' thay vì 'sig_done' để dọn dẹp Python ref
+        self._tts_worker.finished.connect(lambda: setattr(self, '_tts_worker', None))
+        self._tts_worker.finished.connect(self._tts_worker.deleteLater)
         self._tts_worker.start()
 
     def _start_tts(self, text: str):
@@ -1076,8 +1078,10 @@ class SpotlightWindow(QWidget):
 
             self._voice_worker = VoiceWorker(audio_bytes=audio_bytes, parent=self)
             self._voice_worker.sig_finished.connect(self._on_voice_finished)
-            self._voice_worker.sig_finished.connect(lambda: setattr(self, '_voice_worker', None))
-            self._voice_worker.sig_finished.connect(self._voice_worker.deleteLater)
+            
+            # [CRASH-FIX] Dọn dẹp an toàn bằng signal 'finished'
+            self._voice_worker.finished.connect(lambda: setattr(self, '_voice_worker', None))
+            self._voice_worker.finished.connect(self._voice_worker.deleteLater)
             self._voice_worker.start()
             logger.info("[SpotlightWindow] [PTT] Tha phim, bat dau giai ma Gemini STT.")
         else:
@@ -1123,8 +1127,10 @@ class SpotlightWindow(QWidget):
                 
                 self._voice_worker = VoiceWorker(audio_bytes=audio_bytes, parent=self)
                 self._voice_worker.sig_finished.connect(self._on_voice_finished)
-                self._voice_worker.sig_finished.connect(lambda: setattr(self, '_voice_worker', None))
-                self._voice_worker.sig_finished.connect(self._voice_worker.deleteLater)
+                
+                # [CRASH-FIX] Dọn dẹp an toàn bằng signal 'finished'
+                self._voice_worker.finished.connect(lambda: setattr(self, '_voice_worker', None))
+                self._voice_worker.finished.connect(self._voice_worker.deleteLater)
                 self._voice_worker.start()
             else:
                 self.input_box.setEnabled(True)
