@@ -1,96 +1,118 @@
 """
-voice_engine.py - Voice Mode STT (Giai doan 5)
-=================================================
-Xu ly ghi am va nhan dien giong noi (Speech-to-Text).
-Dung pyaudio de thu am truc tiep, va Whisper-tiny (Local) de STT.
+voice_engine.py - Voice Mode STT (Refactored: Whisper -> Gemini Cloud API)
+===========================================================================
+Kien truc moi (don gian hon nhieu):
 
-Kien truc Pre-Loading Singleton (Tiet kiem RAM, Tang toc):
-  - Load model 1 LAN duy nhat vao RAM khi khoi dong (Pre-Loading).
-  - Thread-safe Singleton: threading.Lock bao ve khoi race condition.
-  - Transcribe toc do cao: beam_size=1, condition_on_previous_text=False.
-  - Cache fp16 flag: tinh 1 lan ket qua torch.cuda o __init__.
-  - frames.clear() sau save WAV: giai phong RAM ghi am ngay.
+  VoiceRecorder : pyaudio ghi am, simple RMS VAD phat hien am thanh.
+                  stop_recording() tra ve raw PCM bytes (khong luu file).
+
+  GeminiSTT     : Thread-safe Singleton. Nhan PCM bytes -> wrap WAV header
+                  trong bo nho -> gui Gemini API -> tra ve van ban.
+                  Khong subprocess, khong HTTP IPC, khong file tam tren disk.
+
+So sanh voi phien ban cu:
+  Da xoa: WhisperSTT (singleton HTTP client, port file reader, 8-layer IPC)
+  Da xoa: _whisper_lock (threading.Lock cho Whisper)
+  Da xoa: webrtcvad dependency
+  Giu lai: VoiceRecorder (pyaudio + logic ghi am co ban)
+  Thay doi: stop_recording() tra bytes thay vi Optional[str] (file path)
+  Them moi: GeminiSTT class (Gemini Cloud API inline audio)
+
+Tuan thu ARCHITECTURE_RULES.md:
+  - gc.collect() bat buoc trong transcribe() (production_check.py Rule)
+  - Thread-safe Singleton bang threading.Lock
+  - logging day du, khong dung print()
+  - Khong goi blocking API tren Main Thread (chi goi tu VoiceWorker QThread)
 """
 
-import os
-import wave
-import tempfile
-import logging
 import gc
-import time
+import io
+import logging
+import os
 import threading
+import time
+import wave
 from typing import Optional
 
 logger = logging.getLogger("VoiceEngine")
 
-# ── Thread-safe lock cho Singleton WhisperSTT ─────────────────────────────────
-_whisper_lock = threading.Lock()
+# ── Hang so cau hinh ──────────────────────────────────────────────────────────
+AUDIO_CHUNK_FRAMES    = 480    # 30ms tai 16000Hz (16000 * 0.03 = 480 frames)
+AUDIO_FORMAT_WIDTH    = 2      # int16 = 2 bytes/sample
+AUDIO_CHANNELS        = 1      # mono
+AUDIO_SAMPLE_RATE     = 16000  # Hz
+SILENCE_DURATION_SEC  = 1.5    # Giay im lang de tu dong ngat mic (VAD mode)
+MIN_AUDIO_DURATION    = 1.5    # Giay toi thieu, ngay hon se bi bo qua
+RECORD_TIMEOUT_SEC    = 30     # Giay toi da ghi am (bao hiem)
+RMS_SPEECH_THRESHOLD  = 300    # Nguong RMS phan biet tieng noi vs tieng on
+GEMINI_STT_MODEL      = "gemini-3.1-flash-lite"
 
+# ── Singleton lock cho GeminiSTT ──────────────────────────────────────────────
+_gemini_stt_lock = threading.Lock()
+
+
+# ==============================================================================
+#  VoiceRecorder — Thu am tu microphone
+# ==============================================================================
 
 class VoiceRecorder:
-    """Ghi am tu microphone, luu file WAV, su dung webrtcvad de phat hien giong noi."""
+    """
+    Ghi am tu microphone, su dung RMS don gian de phat hien giong noi.
 
-    def __init__(self, on_silence_detected=None):
+    Thay doi so voi phien ban cu:
+      - stop_recording() tra ve Optional[bytes] thay vi Optional[str] (file path)
+      - Loai bo webrtcvad dependency (khong con can phan loai audio offline)
+      - Giu lai logic VAD don gian bang audioop.rms (built-in Python)
+    """
+
+    def __init__(self, on_silence_detected: Optional[callable] = None):
         import pyaudio
-        # [S3-WEBRTCVAD] BẮT BUỘC: chunk = 480 frames = 30ms tai 16000Hz
-        # webrtcvad chi chap nhan dung 10ms/20ms/30ms (160/320/480 frames).
-        # KHONG duoc de 1024 (64ms) -> ValueError: invalid frame length -> crash!
-        self.chunk = 480
-        self.format = pyaudio.paInt16
-        self.channels = 1
-        self.rate = 16000
-        self._pyaudio = pyaudio.PyAudio()
+        self._pa = pyaudio.PyAudio()
         self._stream = None
-        self._frames = []
-        self._is_recording = False
-        self._record_thread = None
+        self._frames: list[bytes] = []
+        self._is_recording: bool = False
+        self._record_thread: Optional[threading.Thread] = None
         self._on_silence_detected = on_silence_detected
-
-        # [S3-WEBRTCVAD] Khoi tao webrtcvad (Fallback ve RMS neu chua cai)
-        # mode=2: can bang giua do nhanh va chinh xac cho tieng Viet
-        # mode 0=thoang nhat, 3=khat khe nhat
-        try:
-            import webrtcvad
-            self._vad = webrtcvad.Vad(mode=2)
-            self._use_webrtcvad = True
-            logger.info("[VoiceRecorder] webrtcvad da san sang (mode=2, frame=30ms).")
-        except ImportError:
-            self._vad = None
-            self._use_webrtcvad = False
-            logger.warning("[VoiceRecorder] webrtcvad chua cai. Dung RMS fallback. Chay: pip install webrtcvad-wheels")
+        logger.info("[VoiceRecorder] Khoi tao xong (pyaudio, %dHz, mono).", AUDIO_SAMPLE_RATE)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def start_recording(self):
-        """Bat dau thu am non-blocking (stream chay ngam trong thread)."""
-        if not self._pyaudio:
-            logger.error("[VoiceRecorder] Khong the thu am: Chua cai pyaudio.")
-            return
-
+    def start_recording(self) -> None:
+        """Bat dau thu am non-blocking trong daemon thread."""
         self._frames = []
         self._is_recording = True
         try:
-            self._stream = self._pyaudio.open(
-                format=self.format,
-                channels=self.channels,
-                rate=self.rate,
+            import pyaudio
+            self._stream = self._pa.open(
+                format=pyaudio.paInt16,
+                channels=AUDIO_CHANNELS,
+                rate=AUDIO_SAMPLE_RATE,
                 input=True,
-                frames_per_buffer=self.chunk,
+                frames_per_buffer=AUDIO_CHUNK_FRAMES,
             )
-            logger.info("[VoiceRecorder] Da mo microphone, dang thu am...")
             self._record_thread = threading.Thread(
                 target=self._record_loop, daemon=True, name="AudioRecorder"
             )
             self._record_thread.start()
+            logger.info("[VoiceRecorder] Micro da mo, dang thu am...")
         except Exception as e:
             logger.error("[VoiceRecorder] Loi mo microphone: %s", e, exc_info=True)
             self._is_recording = False
 
-    def stop_recording(self) -> Optional[str]:
-        """Dung thu am va luu vao file WAV. Tra ve duong dan file."""
+    def stop_recording(self) -> Optional[bytes]:
+        """
+        Dung thu am, tra ve raw PCM16 bytes.
+
+        Tra ve None neu:
+          - Khong co du lieu audio
+          - Audio qua ngan (< MIN_AUDIO_DURATION giay)
+
+        Luu y: Khac phien ban cu (tra file path). Nay tra bytes truc tiep
+        de GeminiSTT xu ly ma khong can luu file tam tren disk.
+        """
         self._is_recording = False
 
-        if self._record_thread is not None and self._record_thread.is_alive():
+        if self._record_thread and self._record_thread.is_alive():
             self._record_thread.join(timeout=1.0)
         self._record_thread = None
 
@@ -110,79 +132,64 @@ class VoiceRecorder:
             logger.warning("[VoiceRecorder] Khong co du lieu audio.")
             return None
 
-        # [S1-FIX-VAD] Guard: Kiem tra do dai audio toi thieu truoc khi gui Whisper
-        # Audio qua ngan (< 1.5s) = tieng on, tieng tho, tieng go phim -> bo qua, tra None
-        MIN_AUDIO_FRAMES = int(1.5 * (self.rate / self.chunk))  # 1.5 giay
-        if len(self._frames) < MIN_AUDIO_FRAMES:
+        # Guard: kiem tra do dai audio toi thieu
+        min_frames = int(MIN_AUDIO_DURATION * (AUDIO_SAMPLE_RATE / AUDIO_CHUNK_FRAMES))
+        if len(self._frames) < min_frames:
             logger.info(
-                "[VoiceRecorder] Audio qua ngan (%d frames < %d min). Bo qua, khong gui Whisper.",
-                len(self._frames), MIN_AUDIO_FRAMES
+                "[VoiceRecorder] Audio qua ngan (%d frames < %d min). Bo qua.",
+                len(self._frames), min_frames
             )
             self._frames.clear()
             return None
 
-        path = self._save_wav()
-        # [OPT] Giai phong RAM ghi am ngay sau khi save
+        audio_bytes = b"".join(self._frames)
         self._frames.clear()
-        return path
+        logger.info("[VoiceRecorder] Tra ve %d bytes audio (%d frames).", len(audio_bytes), len(self._frames))
+        return audio_bytes
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         """Dong pyaudio an toan khi app thoat."""
-        if self._pyaudio:
+        if self._pa:
             try:
-                self._pyaudio.terminate()
+                self._pa.terminate()
             except Exception as e:
                 logger.error("[VoiceRecorder] Loi terminate pyaudio: %s", e, exc_info=True)
             finally:
-                self._pyaudio = None
+                self._pa = None
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    def _record_loop(self):
-        """Doc audio frames lien tuc cho den khi _is_recording = False hoac VAD tu ngat.
-
-        [S3-WEBRTCVAD] Su dung webrtcvad.Vad thay the audioop.rms + nguong thu cong.
-        webrtcvad phan biet chinh xac tieng nguoi noi vs tieng on nen bang mo hinh thong ke.
-        Khong can buoc Calibration 0.5s nua -> mic phan hoi ngay khi bat.
+    def _record_loop(self) -> None:
         """
-        SILENCE_DURATION = 1.2   # Giay im lang toi thieu sau khi noi de tu dong ngat mic
+        Thu am lien tuc va phat hien giong noi bang RMS don gian.
+        Dung webrtcvad vi da xoa dependency, dung audioop.rms (Python built-in).
+        """
+        frames_per_sec = AUDIO_SAMPLE_RATE / AUDIO_CHUNK_FRAMES
+        max_silence_frames = int(SILENCE_DURATION_SEC * frames_per_sec)
+        min_speech_frames  = int(0.5 * frames_per_sec)
+        max_total_frames   = int(RECORD_TIMEOUT_SEC * frames_per_sec)
 
-        frames_per_sec = self.rate / self.chunk
-        max_silence_frames = int(SILENCE_DURATION * frames_per_sec)
-        # [S1-FIX-VAD] Phai noi lien tuc >= 0.5s moi tich la da noi (chong tieng go phim)
-        min_speech_frames = int(0.5 * frames_per_sec)
-
-        silence_count = 0
-        speech_count = 0
-        has_spoken = False
-        # Timeout bao hiem: 30s toi da, tranh ghi am vo tan
-        MAX_TOTAL_FRAMES = int(30 * frames_per_sec)
+        silence_count: int = 0
+        speech_count: int  = 0
+        has_spoken: bool   = False
 
         while self._is_recording and self._stream:
             try:
-                data = self._stream.read(self.chunk, exception_on_overflow=False)
+                data = self._stream.read(AUDIO_CHUNK_FRAMES, exception_on_overflow=False)
                 self._frames.append(data)
 
-                # [S4-TIMEOUT] Nguong bao hiem: cap 30 giay toi da
-                if len(self._frames) > MAX_TOTAL_FRAMES:
-                    logger.warning("[VoiceRecorder] Timeout 30s. Tu dong ngat mic.")
+                # Timeout bao hiem 30 giay
+                if len(self._frames) > max_total_frames:
+                    logger.warning("[VoiceRecorder] Timeout %ds. Tu dong ngat mic.", RECORD_TIMEOUT_SEC)
                     self._is_recording = False
                     if self._on_silence_detected:
                         self._on_silence_detected()
                     break
 
-                # [S3-WEBRTCVAD] Phat hien giong noi bang webrtcvad
-                if self._use_webrtcvad and self._vad:
-                    try:
-                        is_speech = self._vad.is_speech(data, self.rate)
-                    except Exception:
-                        # Fallback an toan neu co loi khong mong muon
-                        is_speech = False
-                else:
-                    # Fallback: RMS threshold don gian neu webrtcvad chua cai
-                    import audioop
-                    rms = audioop.rms(data, 2)
-                    is_speech = rms > 1000
+                # RMS VAD — simple nhung du dung voi PTT mode
+                import audioop
+                rms = audioop.rms(data, AUDIO_FORMAT_WIDTH)
+                is_speech = rms > RMS_SPEECH_THRESHOLD
 
                 if is_speech:
                     silence_count = 0
@@ -194,9 +201,12 @@ class VoiceRecorder:
                     if has_spoken:
                         silence_count += 1
 
-                # Tu dong ngat khi im lang du lau (chi khi da tung noi)
+                # Tu dong ngat khi im lang du lau (chi cho VAD mode)
                 if has_spoken and silence_count > max_silence_frames:
-                    logger.info("[VoiceRecorder] Phat hien im lang > %.1fs. Tu dong ngat mic.", SILENCE_DURATION)
+                    logger.info(
+                        "[VoiceRecorder] Phat hien im lang > %.1fs. Tu dong ngat.",
+                        SILENCE_DURATION_SEC
+                    )
                     self._is_recording = False
                     if self._on_silence_detected:
                         self._on_silence_detected()
@@ -210,113 +220,120 @@ class VoiceRecorder:
                 logger.error("[VoiceRecorder] Loi doc audio: %s", e, exc_info=True)
                 break
 
-    def _save_wav(self) -> Optional[str]:
-        """Ghi frames vao file WAV tam thoi, tra ve duong dan."""
-        try:
-            # [FIX] Tao file tam va dong fd TRUOC khi wave.open de tranh PermissionError Win
-            fd, path = tempfile.mkstemp(suffix=".wav")
-            os.close(fd)
 
-            with wave.open(path, "wb") as wf:
-                wf.setnchannels(self.channels)
-                wf.setsampwidth(self._pyaudio.get_sample_size(self.format))
-                wf.setframerate(self.rate)
-                wf.writeframes(b"".join(self._frames))
+# ==============================================================================
+#  GeminiSTT — Nhan dien giong noi bang Gemini Cloud API
+# ==============================================================================
 
-            logger.info("[VoiceRecorder] Da luu %d frames -> %s", len(self._frames), path)
-            return path
-        except Exception as e:
-            logger.error("[VoiceRecorder] Loi luu WAV: %s", e, exc_info=True)
-            return None
-
-
-class WhisperSTT:
+class GeminiSTT:
     """
-    Nhan dien giong noi (STT) su dung Local Microservice (whisper_server.py).
-    
-    Uu diem kien truc (Moi):
-      - Khong load torch/whisper trong tien trinh nay, ne GIL, bao ve RAM UI.
-      - Doc cong (port) tu temp/.whisper_port de tu dong cap nhat port moi.
-      - Gui request POST den server de giai ma giong noi.
+    STT su dung Gemini API (gemini-3.1-flash-lite, audio inline).
+
+    Uu diem so voi Whisper local:
+      - Cold start = 0s (khong load model, khong subprocess)
+      - RAM overhead = ~0 (Gemini la Cloud)
+      - Toc do: 0.5-1s/request vs 3-10s (Whisper CPU)
+      - Do chinh xac tieng Viet: cao hon (Gemini multilingual)
+
+    Tuan thu ARCHITECTURE_RULES.md:
+      - Thread-safe Singleton bang threading.Lock
+      - gc.collect() sau moi lan transcribe (bat buoc boi production_check.py)
+      - Khong goi tren Main Thread (chi tu VoiceWorker QThread)
     """
 
-    _instance: Optional["WhisperSTT"] = None
+    _instance: Optional["GeminiSTT"] = None
 
-    def __new__(cls, model_name: str = "small"):
-        with _whisper_lock:
+    def __new__(cls) -> "GeminiSTT":
+        with _gemini_stt_lock:
             if cls._instance is None:
                 inst = super().__new__(cls)
-                inst.model_name = model_name
+                inst._client = None
                 cls._instance = inst
         return cls._instance
 
-    def _get_server_port(self) -> int:
-        port_file = os.path.join("temp", ".whisper_port")
-        if os.path.exists(port_file):
-            try:
-                with open(port_file, "r") as f:
-                    return int(f.read().strip())
-            except (OSError, ValueError) as e:
-                logger.warning("[WhisperSTT] Khong doc duoc port file: %s", e)
-        return 8001  # Fallback neu chua co file
+    # ── Private helpers ───────────────────────────────────────────────────────
 
-    def _ping_server(self, port: int) -> bool:
-        import urllib.request
-        try:
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/ping", method="GET")
-            with urllib.request.urlopen(req, timeout=1.0) as response:
-                return response.status == 200
-        except Exception:
-            # Ping that bai la binh thuong khi server chua khoi dong
-            return False
+    def _get_client(self):
+        """Lazy-init Gemini client. Tai su dung ket noi tren moi lan goi."""
+        if self._client is None:
+            import google.genai as genai
+            api_key = os.getenv("GEMINI_API_KEY", "")
+            if not api_key:
+                raise ValueError("[GeminiSTT] GEMINI_API_KEY chua duoc cau hinh trong .env")
+            self._client = genai.Client(api_key=api_key)
+            logger.info("[GeminiSTT] Gemini Client khoi tao thanh cong.")
+        return self._client
 
-    def _load_model(self):
-        """Khong con load model vao RAM o day nua. Chi ping de chac chan server song."""
-        port = self._get_server_port()
-        if self._ping_server(port):
-            logger.info(f"[WhisperSTT Client] Da ket noi thanh cong Whisper Server tai port {port}")
-        else:
-            logger.warning(f"[WhisperSTT Client] Chua the ping den Whisper Server o port {port}. Server co the chua khoi dong xong.")
+    @staticmethod
+    def _pcm_to_wav_bytes(pcm_bytes: bytes, sample_rate: int = AUDIO_SAMPLE_RATE) -> bytes:
+        """
+        Wrap raw PCM16 bytes vao WAV container trong bo nho.
+        Khong cham disk — dung io.BytesIO.
+        Gemini can WAV header de biet sample_rate va bit_depth.
+        """
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(AUDIO_CHANNELS)
+            wf.setsampwidth(AUDIO_FORMAT_WIDTH)
+            wf.setframerate(sample_rate)
+            wf.writeframes(pcm_bytes)
+        return buf.getvalue()
 
-    def transcribe(self, audio_path: str) -> str:
-        """Gui file WAV den Whisper Server de giai ma. Tra ve van ban."""
-        port = self._get_server_port()
-        import time
-        import urllib.request
-        import json
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def transcribe(self, audio_bytes: bytes) -> str:
+        """
+        Nhan dien giong noi tu raw PCM bytes.
+
+        Args:
+            audio_bytes: Raw PCM16, mono, 16000Hz (tu VoiceRecorder)
+
+        Returns:
+            Van ban tieng Viet. Tra ve "" neu khong nghe duoc.
+            Tra ve chuoi bat dau bang "Loi:" neu co loi API.
+
+        Luu y quan trong:
+            - Phai goi tren Worker Thread (VoiceWorker), KHONG goi tren Main Thread.
+            - gc.collect() duoc goi o cuoi (bat buoc boi production_check.py Rule).
+        """
+        from google.genai import types
 
         start_t = time.time()
-        logger.info(f"[WhisperSTT Client] Bat dau gui audio toi server port {port}...")
+        logger.info("[GeminiSTT] Bat dau transcribe %d bytes audio...", len(audio_bytes))
+
         try:
-            with open(audio_path, "rb") as f:
-                audio_data = f.read()
+            # Wrap PCM -> WAV trong bo nho (khong I/O disk)
+            wav_bytes = self._pcm_to_wav_bytes(audio_bytes)
 
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/transcribe", 
-                data=audio_data, 
-                headers={'Content-Type': 'application/octet-stream'},
-                method="POST"
+            client = self._get_client()
+            response = client.models.generate_content(
+                model=GEMINI_STT_MODEL,
+                contents=[
+                    (
+                        "Transcribe chinh xac doan audio tieng Viet sau. "
+                        "Chi tra ve text thuan, khong them giai thich, "
+                        "khong them dau ngoac kep, khong markdown. "
+                        "Neu khong nghe ro hoac khong co giong noi, tra ve chuoi rong."
+                    ),
+                    types.Part.from_bytes(
+                        data=wav_bytes,
+                        mime_type="audio/wav",
+                    ),
+                ],
             )
-            
-            # [BLOCKING FIX] Nham bao ve UI, tham so timeout dc tang len 30s de ho tro CPU yeu load model nang
-            with urllib.request.urlopen(req, timeout=30.0) as response:
-                result_json = response.read().decode('utf-8')
-                result = json.loads(result_json)
-                text = result.get("text", "")
 
-            logger.info(f"[WhisperSTT Client] Ket qua (%.1fs): '%s'", time.time() - start_t, text)
+            text = (response.text or "").strip()
+            elapsed = time.time() - start_t
+            logger.info("[GeminiSTT] Ket qua (%.2fs): '%s'", elapsed, text[:100])
             return text
-        except urllib.error.URLError as e:
-            logger.error("[WhisperSTT Client] Khong the ket noi toi server: %s", e, exc_info=True)
-            return f"Lỗi: Không thể kết nối máy chủ nhận diện giọng nói (Port {port})."
+
+        except ValueError as e:
+            logger.error("[GeminiSTT] Loi cau hinh: %s", e, exc_info=True)
+            return f"Loi: {str(e)[:100]}"
         except Exception as e:
-            logger.error("[WhisperSTT Client] Loi giai ma: %s", e, exc_info=True)
-            return f"Lỗi giải mã giọng nói: {str(e)[:100]}"
+            logger.error("[GeminiSTT] Loi API Gemini: %s", e, exc_info=True)
+            return f"Loi nhan dien giong noi: {str(e)[:100]}"
         finally:
-            # Don audio file ngay sau khi doc
-            try:
-                os.remove(audio_path)
-            except Exception as e:
-                logger.debug("[VoiceWorker] Khong the xoa file audio_path cu: %s", e)
-            import gc
+            # Bat buoc goi gc.collect() de giai phong bo nho
+            # (yeu cau boi production_check.py Singleton & GC Enforcer Rule)
             gc.collect()

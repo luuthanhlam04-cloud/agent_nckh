@@ -5,8 +5,6 @@ pyaudio
 edge-tts
 pyperclip
 win11toast
-faster-whisper
-torch
 
 # ─── Tầng AI, LLM & Router ───────────────────────────────────────────────────
 google-genai
@@ -30,7 +28,6 @@ Pillow
 watchdog
 APScheduler
 ddgs
-webrtcvad-wheels
 
 # ─── Tiện ích & Cấu hình ─────────────────────────────────────────────────────
 python-dotenv

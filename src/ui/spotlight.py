@@ -263,47 +263,38 @@ class TTSWorker(QThread):
 
 
 # ==============================================================================
-#  VoiceWorker - Worker Thread xu ly STT Whisper
+#  VoiceWorker - Worker Thread xu ly STT (Gemini Cloud API)
 # ==============================================================================
 
 class VoiceWorker(QThread):
     """
-    Worker thuc hien viec giai ma giong noi bang Whisper local (Lazy Load).
-    Tranh block giao dien khi load model hoac khi dang chay inference (GPU/CPU).
+    Worker thuc hien STT bang Gemini Cloud API (gemini-3.1-flash-lite).
+    Nhan raw PCM bytes tu VoiceRecorder, khong can file tam tren disk.
+    Tranh block giao dien bang cach chay trong Worker Thread rieng biet.
     """
     sig_finished = pyqtSignal(str)   # Phat text giai ma ve Main Thread
 
-    def __init__(self, audio_path: str, parent=None):
+    def __init__(self, audio_bytes: bytes, parent=None):
         super().__init__(parent)
-        self._audio_path = audio_path
+        self._audio_bytes = audio_bytes
 
-    def run(self):
+    def run(self) -> None:
         try:
-            from src.ui.voice_engine import WhisperSTT
-            stt = WhisperSTT(model_name="small")
-            # [CRASH-FIX] WhisperSTT() tra ve None neu model load that bai (singleton reset)
-            # Neu khong guard -> stt.transcribe() raise AttributeError -> app crash
-            if stt is None:
-                logger.error("[VoiceWorker] Model Whisper khong the khoi dong. Kiem tra log.")
-                try:
-                    self.sig_finished.emit("Lỗi: Không thể nạp model Whisper. Kiểm tra RAM/ffmpeg.")
-                except RuntimeError:
-                    pass
-                return
-            text = stt.transcribe(self._audio_path)
+            from src.ui.voice_engine import GeminiSTT
+            stt = GeminiSTT()
+            text = stt.transcribe(self._audio_bytes)
             try:
-                self.sig_finished.emit(text if text else "Lỗi: Whisper trả về kết quả trống.")
+                self.sig_finished.emit(text if text else "Lỗi: Gemini trả về kết quả trống.")
             except RuntimeError:
                 pass
-        except ImportError:
-            logger.error("[VoiceWorker] Thieu thu vien src.ui.voice_engine")
+        except ImportError as e:
+            logger.error("[VoiceWorker] Thieu thu vien voice_engine: %s", e, exc_info=True)
             try:
                 self.sig_finished.emit("Lỗi: Không tìm thấy engine STT.")
             except RuntimeError:
                 pass
         except Exception as e:
             logger.error("[VoiceWorker] Loi: %s", e, exc_info=True)
-            # [FIX] Emit loi thuc te thay vi "" de user biet dieu gi xay ra
             try:
                 self.sig_finished.emit(f"Lỗi giải mã: {str(e)[:80]}")
             except RuntimeError:
@@ -460,37 +451,19 @@ class SpotlightWindow(QWidget):
         self.sig_vad_stopped.connect(self._on_vad_stop)
 
         try:
-            from src.ui.voice_engine import WhisperSTT, VoiceRecorder
+            from src.ui.voice_engine import GeminiSTT, VoiceRecorder  # noqa: F401 (GeminiSTT lazy-init)
             self._voice_recorder = VoiceRecorder(on_silence_detected=lambda: self.sig_vad_stopped.emit())
         except ImportError:
             self._voice_recorder = None
-            logger.warning("[SpotlightWindow] Khong the nap VoiceRecorder (thieu file hoac pyaudio).")
+            logger.warning("[SpotlightWindow] Khong the nap VoiceRecorder (thieu pyaudio).")
 
         self._setup_window()
         self._setup_ui()
         self._setup_animation()
         self._setup_greeting_player()
         self._setup_tts_player()
-
-        # Kiem tra ket noi WhisperSTT Server trong daemon thread
-        import threading
-        def _check_whisper_server():
-            try:
-                import time
-                from src.ui.voice_engine import WhisperSTT
-                stt = WhisperSTT()
-                # Doi toi da 5 giay de ping server xem no da len chua
-                for _ in range(5):
-                    if stt._ping_server(stt._get_server_port()):
-                        logger.info(f"[SpotlightWindow] Da ket noi Whisper Server o port {stt._get_server_port()}.")
-                        return
-                    import threading
-                    threading.Event().wait(1.0)
-                logger.warning("[SpotlightWindow] Whisper Server co the chua hoat dong (Ping timeout sau 5s).")
-            except Exception as e:
-                logger.error("[SpotlightWindow] Kiem tra Whisper Server that bai: %s", e, exc_info=True)
-
-        threading.Thread(target=_check_whisper_server, daemon=True, name="WhisperServerCheck").start()
+        # GeminiSTT khoi tao lazy khi lan dau tien ghi am -> khong can check server o day
+        logger.info("[SpotlightWindow] GeminiSTT san sang theo Lazy Init.")
 
     # ── Khoi tao ─────────────────────────────────────────────────────────────
 
@@ -1074,27 +1047,20 @@ class SpotlightWindow(QWidget):
         if self._is_recording or self._is_busy():
             return
 
-        # Guard: Kiem tra pyaudio va Whisper Server san sang
+        # Guard: Kiem tra pyaudio san sang
         if not self._voice_recorder:
             return
 
-        from src.ui.voice_engine import WhisperSTT
-        stt = WhisperSTT()
-        if not stt._ping_server(stt._get_server_port()):
-            self.show_and_focus()
-            self._show_result("Hệ thống nhận diện giọng nói đang khởi động. Vui lòng thử lại sau vài giây!")
-            return
-
-        # Bat mic luon, khong can phat greeting
+        # Bat mic luon, khong can ping server (GeminiSTT lazy init)
         self._is_recording = True
         self.show_and_focus()
         self.input_box.setEnabled(False)
         self.input_box.setPlaceholderText("  🔴 Đang nghe... (Nhả Alt để gửi)")
         self._voice_recorder.start_recording()
-        logger.info("[SpotlightWindow] [PTT] Bat dau ghi am (khong co greeting).")
+        logger.info("[SpotlightWindow] [PTT] Bat dau ghi am.")
 
     def _on_ptt_stop(self):
-        """[S2-PTT] Dung ghi am va gui Whisper khi nhan tin hieu tha phim."""
+        """[PTT] Dung ghi am va gui Gemini STT khi nhan tin hieu tha phim."""
         if not self._is_recording:
             return
 
@@ -1102,18 +1068,18 @@ class SpotlightWindow(QWidget):
         self.input_box.setPlaceholderText("  Đang giải mã giọng nói...")
         self.input_box.setEnabled(False)
 
-        audio_path = self._voice_recorder.stop_recording()
-        if audio_path:
-            self.status_label.setText("   Đang giải mã giọng nói (Whisper)...")
+        audio_bytes = self._voice_recorder.stop_recording()
+        if audio_bytes:
+            self.status_label.setText("   Đang giải mã giọng nói (Gemini STT)...")
             self.status_label.show()
             self._expand_window()
 
-            self._voice_worker = VoiceWorker(audio_path=audio_path, parent=self)
+            self._voice_worker = VoiceWorker(audio_bytes=audio_bytes, parent=self)
             self._voice_worker.sig_finished.connect(self._on_voice_finished)
             self._voice_worker.sig_finished.connect(lambda: setattr(self, '_voice_worker', None))
             self._voice_worker.sig_finished.connect(self._voice_worker.deleteLater)
             self._voice_worker.start()
-            logger.info("[SpotlightWindow] [PTT] Tha phim, bat dau giai ma Whisper.")
+            logger.info("[SpotlightWindow] [PTT] Tha phim, bat dau giai ma Gemini STT.")
         else:
             # Audio qua ngan (tieng on, tap am) -> thong bao nhe
             self.input_box.setEnabled(True)
@@ -1121,27 +1087,16 @@ class SpotlightWindow(QWidget):
             logger.info("[SpotlightWindow] [PTT] Audio qua ngan, bo qua.")
 
     def _start_recording_now(self):
-        """Bat micro chinh thuc, co co che Bắt tay (Handshake) voi Whisper Server."""
+        """Bat micro chinh thuc. GeminiSTT khoi tao lazy khi can, khong can handshake."""
         self._waiting_for_greeting = False
         
-        # [GUARD 1] Kiem tra cai dat pyaudio
+        # Guard: Kiem tra cai dat pyaudio
         if not self._voice_recorder:
-            logger.warning("[SpotlightWindow] VoiceRecorder chua san sang, khong the ghi am.")
+            logger.warning("[SpotlightWindow] VoiceRecorder chua san sang.")
             self._is_recording = False
             self.input_box.setEnabled(True)
             self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
             self._show_result("Lỗi: Chức năng ghi âm chưa sẵn sàng (thiếu pyaudio).")
-            return
-            
-        # [GUARD 2] Handshake ping toi Whisper Server tranh WinError 10053 (Cold Start Latency)
-        from src.ui.voice_engine import WhisperSTT
-        stt = WhisperSTT()
-        if not stt._ping_server(stt._get_server_port()):
-            logger.warning("[SpotlightWindow] Whisper Server chua nap xong model vao RAM.")
-            self._is_recording = False
-            self.input_box.setEnabled(True)
-            self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
-            self._show_result("Hệ thống nhận diện giọng nói đang khởi động (đang nạp AI vào RAM).\nVui lòng chờ thêm vài giây rồi thử lại!")
             return
 
         self.input_box.setPlaceholderText("  Xin chào! Tôi đang nghe... (Hệ thống sẽ tự động gửi khi bạn dừng nói)")
@@ -1160,15 +1115,14 @@ class SpotlightWindow(QWidget):
             self.input_box.setPlaceholderText("  Đang giải mã giọng nói...")
             self.input_box.setEnabled(False)
             
-            audio_path = self._voice_recorder.stop_recording()
-            if audio_path:
-                self.status_label.setText("   Đang giải mã giọng nói (Whisper)...")
+            audio_bytes = self._voice_recorder.stop_recording()
+            if audio_bytes:
+                self.status_label.setText("   Đang giải mã giọng nói (Gemini STT)...")
                 self.status_label.show()
                 self._expand_window()
                 
-                self._voice_worker = VoiceWorker(audio_path=audio_path, parent=self)
+                self._voice_worker = VoiceWorker(audio_bytes=audio_bytes, parent=self)
                 self._voice_worker.sig_finished.connect(self._on_voice_finished)
-                # [CRASH-FIX] Same pattern as TTSWorker: clear Python ref truoc deleteLater
                 self._voice_worker.sig_finished.connect(lambda: setattr(self, '_voice_worker', None))
                 self._voice_worker.sig_finished.connect(self._voice_worker.deleteLater)
                 self._voice_worker.start()
@@ -1210,7 +1164,7 @@ class SpotlightWindow(QWidget):
                 self._play_greeting(for_voice=True)
 
     def _on_voice_finished(self, text: str):
-        """Nhan ket qua tu WhisperSTT va tu dong gui lenh."""
+        """Nhan ket qua tu GeminiSTT va tu dong gui lenh."""
         self.status_label.hide()
         self.input_box.setEnabled(True)
         self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")

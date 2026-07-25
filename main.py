@@ -222,23 +222,6 @@ def _cleanup_components(components: dict):
         except Exception as e:
             logger.debug("[Cleanup] consolidator: %s", e)
 
-    # [WHISPER DAEMON] Don dep Microservice
-    if components.get("whisper_server"):
-        try:
-            port_file = os.path.join("temp", ".whisper_port")
-            if os.path.exists(port_file):
-                with open(port_file, "r") as f:
-                    port = int(f.read().strip())
-                import urllib.request
-                urllib.request.urlopen(f"http://127.0.0.1:{port}/shutdown", timeout=1.0)
-        except Exception as e:
-            logger.debug("[Cleanup] whisper shutdown: %s", e)
-        # Hard kill (Bao hiem Zombie Process)
-        try:
-            components["whisper_server"].terminate()
-        except Exception as e:
-            logger.debug("[Cleanup] whisper terminate: %s", e)
-
     gc.collect()
     logger.info("[Main] Da don sach tai nguyen.")
 
@@ -260,8 +243,8 @@ def create_shutdown_handler(components: dict):
 
 def main():
     logger.info("=" * 60)
-    logger.info("  Digital Scholar - Agent V4.0")
-    logger.info("  Giai doan 4: Spotlight UI + Zero-Cost Interceptor")
+    logger.info("  Digital Scholar - Agent V5.0")
+    logger.info("  Voice: GeminiSTT (Cloud API) | TTS: edge-tts | UI: PyQt6 Spotlight")
     logger.info("=" * 60)
 
     components = {}
@@ -328,14 +311,9 @@ def main():
         app.setQuitOnLastWindowClosed(False)
         app.setApplicationName("Digital Scholar")
 
-        # Khoi dong ngam Whisper Server (Daemon Microservice)
-        import subprocess
-        try:
-            whisper_proc = subprocess.Popen([sys.executable, "src/api/whisper_server.py"])
-            components["whisper_server"] = whisper_proc
-            logger.info(f"[Main] Khoi dong ngam Whisper Server (PID: {whisper_proc.pid})")
-        except Exception as e:
-            logger.error(f"[Main] Khong the khoi dong Whisper Server: {e}")
+        # [VOICE] GeminiSTT duoc khoi tao lazy (lan dau tien ghi am moi load)
+        # Khong con subprocess Whisper Server nao duoc khoi dong o day
+        logger.info("[Main] Voice Engine: GeminiSTT (Gemini Cloud API) san sang theo Lazy Init.")
 
         # Dong goi process_fn de Spotlight goi khong can biet tham so
         if memory is not None and orchestrator is not None:
