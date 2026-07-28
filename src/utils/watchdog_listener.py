@@ -23,6 +23,7 @@ import logging
 import shutil
 import threading
 from pathlib import Path
+from src.core.entity_extractor import GeminiEntityExtractor
 from typing import Optional
 
 from watchdog.observers import Observer
@@ -141,6 +142,7 @@ class InboxWatcher:
         self.inbox_path = inbox_path
         self.knowledge_path = knowledge_path
         self._hybrid_rag = hybrid_rag
+        self._entity_extractor = GeminiEntityExtractor()
 
         # Tạo thư mục nếu chưa tồn tại
         os.makedirs(inbox_path, exist_ok=True)

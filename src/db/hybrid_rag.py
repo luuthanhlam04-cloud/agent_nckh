@@ -404,6 +404,28 @@ class Neo4jManager:
 
         logger.info(f"[Neo4j] MERGE REL [{from_type}:'{from_name}']-[:{rel_type}]->[{to_type}:'{to_name}']")
 
+
+    def upsert_entities(self, entities: List[Dict[str, Any]], relationships: List[Dict[str, Any]]):
+        """
+        Upsert danh sách entities và relationships từ EntityExtractor.
+        """
+        try:
+            for ent in entities:
+                self.upsert_node(
+                    node_type=ent.get("label", "Concept"),
+                    name=ent.get("id", ""),
+                    chunk_id=None
+                )
+            for rel in relationships:
+                self.upsert_relationship(
+                    from_name=rel.get("source", ""),
+                    to_name=rel.get("target", ""),
+                    rel_type=rel.get("type", "RELATED_TO")
+                )
+            logger.info(f"[Neo4j] Đã upsert {len(entities)} entities và {len(relationships)} relationships.")
+        except Exception as e:
+            logger.error(f"[Neo4j] Lỗi upsert_entities: {e}")
+
     def query_entity_chunk_ids(
         self, keyword: str, node_type: Optional[str] = None
     ) -> List[str]:
