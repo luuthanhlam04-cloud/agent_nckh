@@ -28,6 +28,7 @@ import gc
 from typing import Optional, List, Dict, Any, TypedDict, Literal
 
 import google.genai as genai
+from src.shared.metrics import PipelineMetrics, timed
 from google.genai import types as genai_types
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -48,8 +49,7 @@ except ImportError:
 logger = logging.getLogger("Orchestrator")
 
 # â”€â”€â”€ Config (Ä‘á»c tá»« env Ä‘Ã£ Ä‘Æ°á»£c load_dotenv() trong main.py) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+from src.shared.config import GEMINI_API_KEY
 
 CRITIQUE_MODEL    = "gemini-3.1-flash-lite"             # Benchmarked: nhanh nhat (0.72s), JSON mode, mien phi
 WORKER_MODEL      = "google/gemini-2.5-pro"          # Model manh qua OpenRouter
@@ -108,7 +108,8 @@ class AgentState(TypedDict):
     critique: Optional[SelfCritiqueResult]  # Káº¿t quáº£ cháº¥m Ä‘iá»ƒm
     final_answer: str                    # CÃ¢u tráº£ lá»i cuá»‘i cÃ¹ng
     search_iterations: int               # Äáº¿m sá»‘ vÃ²ng láº·p web search (max 3)
-    error: Optional[str]                 # Lá»—i náº¿u cÃ³
+    error: Optional[str]
+    metrics: Any                 # Lá»—i náº¿u cÃ³
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -364,7 +365,9 @@ class ReActOrchestrator:
         """
         self._rag = hybrid_rag
         self._memory = memory
-        self._worker = worker or WorkerEngine()
+        if worker is None:
+            raise ValueError("worker (ILLMClient) must be provided")
+        self._worker = worker
         self._critique = critique_agent or SelfCritiqueAgent()
         self._last_sources: list = []   # Giai doan 5: theo doi nguon de DocxExporter
 
@@ -386,10 +389,12 @@ class ReActOrchestrator:
             return {**state, "context_chunks": []}
 
         try:
-            context_chunks = self._rag.retrieve_context(
-                query=state["user_input"],
-                top_k=5,
-            )
+            with timed(state["metrics"], "qdrant_ms"):
+                context_chunks = self._rag.retrieve_context(
+                    query=state["user_input"],
+                    top_k=5,
+                )
+            state["metrics"].chunks_retrieved = len(context_chunks)
             # LÆ°u nguá»“n Ä‘á»ƒ get_last_sources() tráº£ vá» cho DocxExporter (Giai Ä‘oáº¡n 5)
             self._last_sources = list({
                 c.get("source", "") for c in context_chunks if c.get("source")
@@ -409,10 +414,14 @@ class ReActOrchestrator:
         BÆ°á»›c 6.1: Cháº¥m Ä‘iá»ƒm cháº¥t lÆ°á»£ng ngá»¯ cáº£nh RAG.
         """
         try:
-            critique = self._critique.evaluate(
-                question=state["user_input"],
-                context_chunks=state["context_chunks"],
-            )
+            with timed(state["metrics"], "critique_ms"):
+                critique = self._critique.evaluate(
+                    question=state["user_input"],
+                    context_chunks=state["context_chunks"],
+                )
+            state["metrics"].critique_rounds += 1
+            if critique:
+                state["metrics"].critique_score = critique.relevance_score
             return {**state, "critique": critique}
         except Exception as e:
             logger.error(f"[ReAct:CRITIQUE] Lá»—i: {e}. Fallback proceed.")
@@ -436,29 +445,33 @@ class ReActOrchestrator:
         if current_iter >= MAX_SEARCH_ITER:
             logger.warning(
                 f"[ReAct:WEB_SEARCH] ÄÃ£ Ä‘áº¡t giá»›i háº¡n {MAX_SEARCH_ITER} vÃ²ng tÃ¬m kiáº¿m. "
+                f"[ReAct:WEB_SEARCH] Ä Ã£ Ä‘áº¡t giá»›i háº¡n {MAX_SEARCH_ITER} vÃ²ng tÃ¬m kiáº¿m. "
                 "Dá»«ng vÃ  dÃ¹ng best effort."
             )
             return {**state, "search_iterations": current_iter}
 
         if not DDGS_AVAILABLE:
-            logger.warning("[ReAct:WEB_SEARCH] duckduckgo-search chÆ°a cÃ i. Bá» qua.")
+            logger.warning("[ReAct:WEB_SEARCH] duckduckgo-search chÆ°a cÃ i. Bá»  qua.")
             return {**state, "search_iterations": current_iter + 1}
+
+        state["metrics"].web_search_used = True
 
         logger.info(
             f"[ReAct:WEB_SEARCH] VÃ²ng {current_iter + 1}/{MAX_SEARCH_ITER}: "
-            f"TÃ¬m kiáº¿m '{state['user_input'][:50]}...'"
+            f"Thá»±c hiá»‡n tÃ¬m kiáº¿m web cho: {state['user_input']}"
         )
 
         try:
             web_texts = []
-            with DDGS() as ddgs:
-                results = list(ddgs.text(
-                    keywords=state["user_input"],
-                    max_results=WEB_SEARCH_MAX_RESULTS,
-                ))
-                for r in results:
-                    snippet = f"[{r.get('title', '')}]\n{r.get('body', '')}"
-                    web_texts.append(snippet)
+            with timed(state["metrics"], "web_search_ms"):
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(
+                        keywords=state["user_input"],
+                        max_results=WEB_SEARCH_MAX_RESULTS,
+                    ))
+                    for r in results:
+                        snippet = f"[{r.get('title', '')}]\n{r.get('body', '')}"
+                        web_texts.append(snippet)
 
             logger.info(f"[ReAct:WEB_SEARCH] TÃ¬m Ä‘Æ°á»£c {len(web_texts)} káº¿t quáº£.")
 
@@ -474,10 +487,10 @@ class ReActOrchestrator:
             logger.error(f"[ReAct:WEB_SEARCH] Lá»—i DuckDuckGo: {e}")
             return {**state, "search_iterations": current_iter + 1}
 
-    # â”€â”€ Node 4: Sinh cÃ¢u tráº£ lá»i cuá»‘i cÃ¹ng â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â”€â”€ Node 4: Sinh cÃ¢u tráº£ lá» i cuá»‘i cÃ¹ng â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _node_generate(self, state: AgentState) -> AgentState:
         """
-        BÆ°á»›c 5.3: Nhá»“i ngá»¯ cáº£nh vÃ o prompt vÃ  gá»i WorkerEngine sinh cÃ¢u tráº£ lá»i.
+        BÆ°á»›c 5.3: Nhá»“i ngá»¯ cáº£nh vÃ o prompt vÃ  gá» i WorkerEngine sinh cÃ¢u tráº£ lá» i.
         """
         # [I4 FIX] Gioi han web_results truoc khi nho vao prompt
         # Sau 3 vong Ã— 5 ket qua = 15 web results co the vuot token limit 32K
@@ -505,7 +518,7 @@ class ReActOrchestrator:
             context_combined += f"=== Káº¿t quáº£ tÃ¬m kiáº¿m web ===\n{web_text}\n\n"
 
         if not context_combined:
-            context_combined = "(KhÃ´ng tÃ¬m tháº¥y ngá»¯ cáº£nh. Tráº£ lá»i dá»±a trÃªn kiáº¿n thá»©c chung.)"
+            context_combined = "(KhÃ´ng tÃ¬m tháº¥y ngá»¯ cáº£nh. Tráº£ lá» i dá»±a trÃªn kiáº¿n thá»©c chung.)"
 
         user_prompt = f"""NGá»® Cáº¢NH:
 {context_combined}
@@ -513,31 +526,31 @@ class ReActOrchestrator:
 CÃ‚U Há»ŽI:
 {state['user_input']}
 
-Tráº£ lá»i báº±ng tiáº¿ng Viá»‡t há»c thuáº­t:"""
+Tráº£ lá» i báº±ng tiáº¿ng Viá»‡t há» c thuáº­t:"""
 
         try:
-            # Sá»­a Ä‘á»•i: HÃ m generate tráº£ vá» Generator
-            gen = self._worker.generate(
-                system_prompt=_ANSWER_SYSTEM_PROMPT,
-                user_prompt=user_prompt,
-            )
-            return gen
+            with timed(state["metrics"], "llm_generate_ms"):
+                gen = self._worker.generate(
+                    system_prompt=_ANSWER_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                )
+            return {**state, "final_answer": gen}
         except Exception as e:
             logger.error(f"[ReAct:GENERATE] Lá»—i WorkerEngine: {e}")
             return {
                 **state,
-                "final_answer": f"Xin lá»—i, há»‡ thá»‘ng gáº·p sá»± cá»‘ khi xá»­ lÃ½ cÃ¢u há»i. Lá»—i: {str(e)[:100]}",
+                "final_answer": f"Xin lá»—i, há»‡ thá»‘ng gáº·p sá»± cá»‘ khi xá»­ lÃ½ cÃ¢u há» i. Lá»—i: {str(e)[:100]}",
                 "error": str(e),
             }
 
-    # â”€â”€ Äiá»u kiá»‡n chuyá»ƒn tráº¡ng thÃ¡i â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â”€â”€ Ä iá» u kiá»‡n chuyá»ƒn tráº¡ng thÃ¡i â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _should_search(self, state: AgentState) -> bool:
         """BÆ°á»›c 6.2: Quyáº¿t Ä‘á»‹nh cÃ³ cáº§n web search khÃ´ng."""
         critique = state.get("critique")
         if critique is None:
             return False
         if state.get("search_iterations", 0) >= MAX_SEARCH_ITER:
-            return False  # ÄÃ£ Ä‘áº¡t giá»›i háº¡n, báº¯t buá»™c generate
+            return False  # Ä Ã£ Ä‘áº¡t giá»›i háº¡n, báº¯t buá»™c generate
         return critique.action_required == "force_web_search"
 
     # â”€â”€ Entry point chÃ­nh â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -548,8 +561,8 @@ Tráº£ lá»i báº±ng tiáº¿ng Viá»‡t há»c thuáº­t:"""
         intent: str = "research_query"
     ):
         """
-        Cháº¡y toÃ n bá»™ luá»“ng ReAct cho má»™t cÃ¢u há»i cá»§a ngÆ°á»i dÃ¹ng.
-        Giai doan 5.5: Bá»• sung intent Ä‘á»ƒ chá»n luá»“ng.
+        Cháº¡y toÃ n bá»™ luá»“ng ReAct cho má»™t cÃ¢u há» i cá»§a ngÆ°á» i dÃ¹ng.
+        Giai doan 5.5: Bá»• sung intent Ä‘á»ƒ chá» n luá»“ng.
         """
         config = get_config_for_intent(intent)
         
@@ -587,7 +600,12 @@ Tráº£ lá»i báº±ng tiáº¿ng Viá»‡t há»c thuáº­t:"""
             return
 
         # Deep-Track (research_query)
-        # Khá»Ÿi táº¡o tráº¡ng thÃ¡i ban Ä‘áº§u
+        metrics = PipelineMetrics(
+            query=user_input, 
+            intent=intent, 
+            conversation_id=getattr(self._memory, "session_id", "")
+        )
+        # Khởi tạo trạng thái ban đầu
         state: AgentState = {
             "user_input": user_input,
             "context_chunks": additional_context or [],
@@ -596,6 +614,7 @@ Tráº£ lá»i báº±ng tiáº¿ng Viá»‡t há»c thuáº­t:"""
             "final_answer": "",
             "search_iterations": 0,
             "error": None,
+            "metrics": metrics,
         }
 
         # [S5-FIX] Chá»‰ thÃªm "..." khi input thá»±c sá»± bá»‹ cáº¯t
@@ -629,25 +648,30 @@ Tráº£ lá»i báº±ng tiáº¿ng Viá»‡t há»c thuáº­t:"""
             # Critique lai voi context moi
             state = self._node_critique(state)
 
-        # BÆ°á»›c 3: Generate
-        gen = self._node_generate(state)
-
-        # Náº¿u _node_generate tráº£ vá» Exception dict thay vÃ¬ generator
-        total_chars = 0
-        if isinstance(gen, dict) and "error" in gen:
-            answer = gen.get("final_answer", "")
-            total_chars = len(answer)
-            yield answer
+        # 5. Sinh cÃ¢u tráº£ lá» i (Generate)
+        state = self._node_generate(state)
+        
+        # 6. Yield tá»«ng pháº§n (Náº¿u LLM tráº£ vá»  generator)
+        import time
+        t0 = time.perf_counter()
+        if isinstance(state["final_answer"], str):
+            metrics.llm_total_ms = (time.perf_counter() - t0) * 1000
+            yield state["final_answer"]
         else:
-            for chunk in gen:
-                total_chars += len(chunk)
+            first = True
+            for chunk in state["final_answer"]:
+                if first:
+                    metrics.llm_first_token_ms = (time.perf_counter() - t0) * 1000
+                    first = False
                 yield chunk
+            metrics.llm_total_ms = (time.perf_counter() - t0) * 1000
 
         logger.info(
             "[ReActOrchestrator] === HoÃ n thÃ nh. "
             "Search loops=%d | Answer length=%d chars ===",
             state["search_iterations"], total_chars,
         )
+        metrics.log_summary()
 
     def get_last_sources(self) -> list:
         """

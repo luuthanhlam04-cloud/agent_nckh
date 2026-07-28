@@ -257,7 +257,8 @@ class GeminiSTT:
         """Lazy-init Gemini client. Tai su dung ket noi tren moi lan goi."""
         if self._client is None:
             import google.genai as genai
-            api_key = os.getenv("GEMINI_API_KEY", "")
+            from src.shared.config import GEMINI_API_KEY
+            api_key = GEMINI_API_KEY
             if not api_key:
                 raise ValueError("[GeminiSTT] GEMINI_API_KEY chua duoc cau hinh trong .env")
             self._client = genai.Client(api_key=api_key)

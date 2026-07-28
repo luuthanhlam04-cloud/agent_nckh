@@ -80,7 +80,8 @@ try:
     check("BUG-9: prev_web_count slice gives only new results", new_only == ["r4", "r5"])
 
     # Circuit breaker: max_iterations
-    orch = ReActOrchestrator(hybrid_rag=None)
+    from src.infrastructure.llm.openrouter_client import OpenRouterLLMClient
+    orch = ReActOrchestrator(hybrid_rag=None, worker=OpenRouterLLMClient())
     state: AgentState = {
         "user_input": "test", "context_chunks": [], "web_results": [],
         "critique": SelfCritiqueResult(

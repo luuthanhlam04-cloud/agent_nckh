@@ -16,6 +16,8 @@ Yeu cau he thong:
 
 import os
 import sys
+from src.shared.settings import validate
+validate()
 import time
 import signal
 import logging
@@ -54,10 +56,8 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 load_dotenv()
 
 # --- Duong dan Obsidian Vault ---
-VAULT_PATH = os.getenv(
-    "OBSIDIAN_VAULT_PATH",
-    os.path.join(os.path.dirname(__file__), "Obsidian_Vault"),
-)
+from src.shared.config import OBSIDIAN_VAULT_PATH
+VAULT_PATH = OBSIDIAN_VAULT_PATH or r"C:\Users\luuth\Documents\NCKH\Data"
 
 
 # ==============================================================================
@@ -72,7 +72,8 @@ def init_database():
     """
     from src.db.hybrid_rag import HybridRAG
 
-    neo4j_uri = os.getenv("NEO4J_URI", "")
+    from src.shared.config import NEO4J_URI
+    neo4j_uri = NEO4J_URI
 
     if not neo4j_uri or "dien" in neo4j_uri.lower():
         logger.warning(
@@ -109,9 +110,11 @@ def init_core_ai(hybrid_rag):
     """
     from src.core.conversation_memory import ConversationMemory
     from src.core.orchestrator import ReActOrchestrator
+    from src.infrastructure.llm.openrouter_client import OpenRouterLLMClient
 
     memory = ConversationMemory()
-    orchestrator = ReActOrchestrator(hybrid_rag=hybrid_rag)
+    worker = OpenRouterLLMClient()
+    orchestrator = ReActOrchestrator(hybrid_rag=hybrid_rag, worker=worker)
 
     logger.info("[Main] ConversationMemory + ReActOrchestrator da san sang.")
     return memory, orchestrator
@@ -247,7 +250,8 @@ def main():
             
             # Khoi tao MemoryConsolidator
             from src.services.memory_consolidator import MemoryConsolidator
-            gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+            from src.shared.config import GEMINI_API_KEY
+            gemini_api_key = GEMINI_API_KEY
             consolidator = MemoryConsolidator(
                 memory=memory, 
                 vault_path=VAULT_PATH, 

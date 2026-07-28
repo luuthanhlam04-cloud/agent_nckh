@@ -123,7 +123,11 @@ class TTSWorker(QThread):
                 communicate = _edge_tts_mod.Communicate(text_for_tts, voice=TTS_VOICE)
                 fd, path = tempfile.mkstemp(suffix=".mp3")
                 os.close(fd)
+                import time
+                t0 = time.perf_counter()
                 await communicate.save(path)
+                tts_ms = (time.perf_counter() - t0) * 1000
+                logger.info(f"[Metrics] TTS_chunk=%.0fms", tts_ms)
                 return path
 
             loop = asyncio.new_event_loop()
@@ -188,7 +192,11 @@ class VoiceWorker(QThread):
         try:
             from src.ui.voice_engine import GeminiSTT
             stt = GeminiSTT()
+            import time
+            t0 = time.perf_counter()
             text = stt.transcribe(self._audio_bytes)
+            stt_ms = (time.perf_counter() - t0) * 1000
+            logger.info(f"[Metrics] STT=%.0fms", stt_ms)
             try:
                 self.sig_finished.emit(text if text else "Lỗi: Gemini trả về kết quả trống.")
             except RuntimeError:
@@ -257,7 +265,8 @@ class GlobalHotkeyWorker(QThread):
             # [S2-PTT] Doc VOICE_MODE tu bien moi truong
             # ptt = Push-to-Talk (giu phim = ghi, tha phim = gui)
             # vad = VAD tu dong (bam 1 lan de bat/tat, hien tai la mode mac dinh)
-            voice_mode = os.getenv("VOICE_MODE", "ptt").strip().lower()
+            from src.shared.config import VOICE_MODE
+            voice_mode = VOICE_MODE.strip().lower()
             logger.info("[Hotkey] Voice Mode: %s", voice_mode.upper())
 
             keyboard.add_hotkey(GLOBAL_HOTKEY, _on_hotkey)
