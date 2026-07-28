@@ -503,25 +503,75 @@ Trả về văn bản thuần túy (plain text), không dùng JSON, không thêm
 
 
 # ─── Factory function tiện lợi ────────────────────────────────────────────────
-def parse_document(file_path: str) -> List[Dict[str, Any]]:
-    """
-    Auto-detect loại tài liệu và gọi parser tương ứng.
-    Trả về danh sách chunk chuẩn.
+class ParserRegistry:
+    _parsers = {}
+    
+    @classmethod
+    def register(cls, parser):
+        for ext in parser.supported_extensions():
+            cls._parsers[ext.lower()] = parser
+            
+    @classmethod
+    def get(cls, file_path: str):
+        from pathlib import Path
+        ext = Path(file_path).suffix.lower()
+        if ext not in cls._parsers:
+            import logging
+            logger = logging.getLogger("Parser")
+            logger.warning(f"[Parser] Định dạng không hỗ trợ: '{ext}'. Bỏ qua file.")
+            return None
+        return cls._parsers[ext]
 
-    Args:
-        file_path: Đường dẫn đến file PDF hoặc PPTX.
+ParserRegistry.register(PDFParser())
+ParserRegistry.register(PPTXParser())
 
-    Returns:
-        Danh sách chunk hoặc list rỗng nếu định dạng không hỗ trợ.
+class NCKHParser(IParser):
     """
-    ext = Path(file_path).suffix.lower()
-    if ext == ".pdf":
-        return PDFParser().parse(file_path)
-    elif ext in (".pptx", ".ppt"):
-        return PPTXParser().parse(file_path)
-    else:
-        logger.warning(f"[Parser] Định dạng không hỗ trợ: '{ext}'. Bỏ qua file.")
+    Parser đặc thù cho đề tài NCKH (Sprint 5).
+    Áp dụng Parent-Child Chunking theo ADR-002.
+    """
+    def supported_extensions(self) -> List[str]:
+        return [".nckh.pdf"]  # Dùng đuôi riêng để không conflict với PDFParser thường
+
+    def parse(self, file_path: str) -> List[Dict[str, Any]]:
+        import fitz
+        
+        doc = fitz.open(file_path)
+        chunks = []
+        full_text = ""
+        
+        for i, page in enumerate(doc):
+            full_text += page.get_text("text") + "\n"
+            
+        # Parent-Child chunking cho NCKH
+        paragraphs = chunk_by_paragraph(full_text, source=file_path, page=0)
+        
+        for p in paragraphs:
+            parent_text = p["text"]
+            # Tạo child chunks
+            words = parent_text.split()
+            child_size = 40
+            for j in range(0, len(words), child_size):
+                child_text = " ".join(words[j:j+child_size])
+                if len(child_text) > 50:
+                    chunks.append({
+                        "text": child_text,
+                        "parent_text": parent_text,
+                        "source": file_path,
+                        "page": p.get("page", 0),
+                        "section": p.get("section", ""),
+                        "type": "child_chunk"
+                    })
+        return chunks
+
+ParserRegistry.register(NCKHParser())
+
+
+def parse_document(file_path: str):
+    parser = ParserRegistry.get(file_path)
+    if parser is None:
         return []
+    return parser.parse(file_path)
 
 
 # ─── Test nhanh khi chạy trực tiếp ───────────────────────────────────────────

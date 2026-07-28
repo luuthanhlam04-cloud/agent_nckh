@@ -43,3 +43,12 @@ class IParser(ABC):
     @abstractmethod
     def supported_extensions(self) -> List[str]:
         pass
+
+class IRetriever(ABC):
+    """
+    Interface cho retrieval strategies.
+    Implementations: HybridRAGRetriever, NCKHRetriever.
+    """
+    @abstractmethod
+    def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        pass
