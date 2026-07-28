@@ -118,8 +118,11 @@ def init_core_ai(hybrid_rag):
 
 
 # ==============================================================================
-#  Coordinator - Diem noi giua Router va Orchestrator (Giu nguyen tu Giai doan 3)
+#  Coordinator - Diem noi giua Router va Orchestrator
 # ==============================================================================
+# RequestCoordinator duoc tach ra thanh src/core/coordinator.py (Sprint 1).
+# main.py chi tao instance va truyen vao SpotlightWindow qua functools.partial.
+# process_user_input() ben duoi chi giu lai de backward-compat voi bat ky caller cu.
 
 from typing import Any
 
@@ -130,53 +133,16 @@ def process_user_input(
     consolidator=None,
 ):
     """
-    Coordinator trung tam ket noi toan bo luong xu ly cau hoi.
-    Giai doan 5.5: Dynamic Routing (Bypass SemanticRouter cu)
+    Backward-compatible wrapper. Goi RequestCoordinator.process() ben trong.
+    Sprint 2: Se xoa ham nay khi tat ca caller da switch sang Coordinator.
     """
-    try:
-        if isinstance(user_input, dict):
-            intent_type = user_input.get("intent", "research_query")
-            query = user_input.get("query", "")
-            topic = user_input.get("topic", "")
-        else:
-            intent_type = "research_query"
-            query = str(user_input)
-            topic = ""
-
-        logger.info(f"[Coordinator] Intent (Dynamic): {intent_type}")
-
-        if intent_type == "EXPORT_DOCX":
-            topic_str = topic or query
-            try:
-                from src.services.docx_exporter import DocxExporter
-                exporter = DocxExporter(orchestrator=orchestrator)
-                _path, answer = exporter.export(topic=topic_str)
-                yield answer
-            except ImportError:
-                yield f"Xuất báo cáo về '{topic_str}': thiếu thư viện python-docx. Chạy: pip install python-docx"
-            except Exception as e:
-                logger.error("[Coordinator] Lỗi DocxExporter: %s", e, exc_info=True)
-                yield f"Lỗi xuất báo cáo: {str(e)[:100]}"
-                
-        else:
-            # intent_type sẽ là "daily_task" hoặc "research_query"
-            gen = orchestrator.run(user_input=query, intent=intent_type)
-            full_answer = ""
-            if isinstance(gen, str):
-                 full_answer = gen
-                 yield gen
-            else:
-                 for chunk in gen:
-                      if chunk:
-                          full_answer += chunk
-                          yield chunk
-            
-            if full_answer:
-                memory.add(user_input=query, agent_response=full_answer)
-
-    except Exception as e:
-        logger.error(f"[Coordinator] Lỗi xử lý: {e}", exc_info=True)
-        yield f"Lỗi hệ thống: {str(e)}"
+    from src.core.coordinator import RequestCoordinator
+    coordinator = RequestCoordinator(
+        orchestrator=orchestrator,
+        memory=memory,
+        consolidator=consolidator,
+    )
+    yield from coordinator.process(user_input)
 
 
 # ==============================================================================

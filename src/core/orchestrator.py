@@ -1,23 +1,23 @@
 """
-orchestrator.py - Bộ não điều phối chính (Core Orchestrator)
+orchestrator.py - Bá»™ nÃ£o Ä‘iá» u phá»‘i chÃ­nh (Core Orchestrator)
 =============================================================
-Kiến trúc 3 tầng (last agent.md Phần 2.3):
+Kiáº¿n trÃºc 3 táº§ng (last agent.md Pháº§n 2.3):
 
-  WorkerEngine      : Động cơ suy luận chính - gọi OpenRouter qua OpenAI SDK.
-                      Hỗ trợ streaming và non-streaming.
+  WorkerEngine      : Ä á»™ng cÆ¡ suy luáº­n chÃ­nh - gá» i OpenRouter qua OpenAI SDK.
+                      Há»— trá»£ streaming vÃ  non-streaming.
 
-  SelfCritiqueAgent : LLM-as-a-judge chấm điểm ngữ cảnh RAG (Bước 6.1).
-                      Nếu điểm < 8/10 -> kích hoạt web search.
-                      API Contract 8.2 (last agent.md Phần 8).
+  SelfCritiqueAgent : LLM-as-a-judge cháº¥m Ä‘iá»ƒm ngá»¯ cáº£nh RAG (BÆ°á»›c 6.1).
+                      Náº¿u Ä‘iá»ƒm < 8/10 -> kÃ­ch hoáº¡t web search.
+                      API Contract 8.2 (last agent.md Pháº§n 8).
 
-  ReActOrchestrator : Máy trạng thái (State Machine) điều phối toàn bộ luồng.
-                      Tương đương LangGraph StateGraph nhưng không phụ thuộc thư viện,
-                      dễ migrate sang LangGraph bằng cách thay _run_graph() sau này.
-                      Giới hạn web search: max_iterations=3 (Bước 6.2).
+  ReActOrchestrator : MÃ¡y tráº¡ng thÃ¡i (State Machine) Ä‘iá» u phá»‘i toÃ n bá»™ luá»“ng.
+                      TÆ°Æ¡ng Ä‘Æ°Æ¡ng LangGraph StateGraph nhÆ°ng khÃ´ng phá»¥ thuá»™c thÆ° viá»‡n,
+                      dá»… migrate sang LangGraph báº±ng cÃ¡ch thay _run_graph() sau nÃ y.
+                      Giá»›i háº¡n web search: max_iterations=3 (BÆ°á»›c 6.2).
 
-Luồng ReAct (Bước 6.1 -> 6.2):
+Luá»“ng ReAct (BÆ°á»›c 6.1 -> 6.2):
   RAG_RETRIEVE -> CRITIQUE -> (score >= 8) GENERATE_ANSWER
-                           -> (score < 8)  WEB_SEARCH -> CRITIQUE -> ... (max 3 vòng)
+                           -> (score < 8)  WEB_SEARCH -> CRITIQUE -> ... (max 3 vÃ²ng)
 """
 
 import os
@@ -32,6 +32,10 @@ from google.genai import types as genai_types
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+from src.core.interfaces import ILLMClient
+from src.core.prompt_builder import PromptBuilder, PromptContext
+from src.core.orchestrator_config import OrchestratorConfig, get_config_for_intent
+
 # Web search
 try:
     from ddgs import DDGS
@@ -40,10 +44,10 @@ except ImportError:
     DDGS_AVAILABLE = False
     logging.warning("[Orchestrator] ddgs chua cai. Web search se bi skip. Chay: pip install ddgs")
 
-# ─── Logging ──────────────────────────────────────────────────────────────────
+# â”€â”€â”€ Logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 logger = logging.getLogger("Orchestrator")
 
-# ─── Config (đọc từ env đã được load_dotenv() trong main.py) ─────────────────
+# â”€â”€â”€ Config (Ä‘á»c tá»« env Ä‘Ã£ Ä‘Æ°á»£c load_dotenv() trong main.py) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
@@ -56,73 +60,73 @@ WEB_SEARCH_MAX_RESULTS = 5                           # So ket qua tim kiem toi d
 MAX_WEB_IN_PROMPT = 5                                # [I4] Gioi han web results nho vao prompt
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  PYDANTIC MODELS - API Contract 8.2 (last agent.md Phần 8)
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+#  PYDANTIC MODELS - API Contract 8.2 (last agent.md Pháº§n 8)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class SelfCritiqueResult(BaseModel):
     """
-    Kết quả chấm điểm chất lượng ngữ cảnh RAG bởi SelfCritiqueAgent.
-    Ánh xạ trực tiếp từ API Contract 8.2 trong last agent.md.
+    Káº¿t quáº£ cháº¥m Ä‘iá»ƒm cháº¥t lÆ°á»£ng ngá»¯ cáº£nh RAG bá»Ÿi SelfCritiqueAgent.
+    Ãnh xáº¡ trá»±c tiáº¿p tá»« API Contract 8.2 trong last agent.md.
     """
     relevance_score: float = Field(
         ..., ge=0.0, le=10.0,
-        description="Điểm tương quan ngữ nghĩa của context với câu hỏi (0.0 - 10.0)"
+        description="Äiá»ƒm tÆ°Æ¡ng quan ngá»¯ nghÄ©a cá»§a context vá»›i cÃ¢u há»i (0.0 - 10.0)"
     )
     answerability_score: float = Field(
         ..., ge=0.0, le=10.0,
-        description="Điểm mức độ tự tin có thể trả lời đầy đủ (0.0 - 10.0)"
+        description="Äiá»ƒm má»©c Ä‘á»™ tá»± tin cÃ³ thá»ƒ tráº£ lá»i Ä‘áº§y Ä‘á»§ (0.0 - 10.0)"
     )
     missing_information: str = Field(
         "",
-        description="Mô tả phần tri thức còn thiếu (nếu có)"
+        description="MÃ´ táº£ pháº§n tri thá»©c cÃ²n thiáº¿u (náº¿u cÃ³)"
     )
     action_required: Literal["proceed", "force_web_search"] = Field(
         ...,
-        description="proceed nếu đủ tốt, force_web_search nếu cần tra mạng"
+        description="proceed náº¿u Ä‘á»§ tá»‘t, force_web_search náº¿u cáº§n tra máº¡ng"
     )
 
     @property
     def avg_score(self) -> float:
-        """Điểm trung bình tổng hợp."""
+        """Äiá»ƒm trung bÃ¬nh tá»•ng há»£p."""
         return (self.relevance_score + self.answerability_score) / 2
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  AgentState - TypedDict định nghĩa trạng thái của State Machine
-#  (Tương thích 100% với LangGraph StateGraph khi nâng cấp sau)
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+#  AgentState - TypedDict Ä‘á»‹nh nghÄ©a tráº¡ng thÃ¡i cá»§a State Machine
+#  (TÆ°Æ¡ng thÃ­ch 100% vá»›i LangGraph StateGraph khi nÃ¢ng cáº¥p sau)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class AgentState(TypedDict):
     """
-    Toàn bộ trạng thái của agent trong một vòng xử lý (một câu hỏi).
-    Mỗi node trong state machine nhận AgentState và trả về AgentState đã cập nhật.
+    ToÃ n bá»™ tráº¡ng thÃ¡i cá»§a agent trong má»™t vÃ²ng xá»­ lÃ½ (má»™t cÃ¢u há»i).
+    Má»—i node trong state machine nháº­n AgentState vÃ  tráº£ vá» AgentState Ä‘Ã£ cáº­p nháº­t.
     """
-    user_input: str                      # Câu hỏi gốc của người dùng
-    context_chunks: List[Dict]           # Chunks ngữ cảnh từ HybridRAG
-    web_results: List[str]               # Kết quả tìm kiếm DuckDuckGo
-    critique: Optional[SelfCritiqueResult]  # Kết quả chấm điểm
-    final_answer: str                    # Câu trả lời cuối cùng
-    search_iterations: int               # Đếm số vòng lặp web search (max 3)
-    error: Optional[str]                 # Lỗi nếu có
+    user_input: str                      # CÃ¢u há»i gá»‘c cá»§a ngÆ°á»i dÃ¹ng
+    context_chunks: List[Dict]           # Chunks ngá»¯ cáº£nh tá»« HybridRAG
+    web_results: List[str]               # Káº¿t quáº£ tÃ¬m kiáº¿m DuckDuckGo
+    critique: Optional[SelfCritiqueResult]  # Káº¿t quáº£ cháº¥m Ä‘iá»ƒm
+    final_answer: str                    # CÃ¢u tráº£ lá»i cuá»‘i cÃ¹ng
+    search_iterations: int               # Äáº¿m sá»‘ vÃ²ng láº·p web search (max 3)
+    error: Optional[str]                 # Lá»—i náº¿u cÃ³
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  WorkerEngine - Động cơ suy luận chính (OpenRouter)
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+#  WorkerEngine - Äá»™ng cÆ¡ suy luáº­n chÃ­nh (OpenRouter)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-class WorkerEngine:
+class WorkerEngine(ILLMClient):
     """
-    Gọi các LLM mạnh (Gemini Pro, Claude Sonnet...) qua cổng OpenRouter.
+    Gá»i cÃ¡c LLM máº¡nh (Gemini Pro, Claude Sonnet...) qua cá»•ng OpenRouter.
 
-    Spec (last agent.md Phần 2.3):
-      "Sử dụng chuẩn kết nối của thư viện openai trỏ endpoint về OpenRouter API.
-       Cấu hình linh hoạt gọi các mô hình thương mại để xử lý lượng token khổng lồ
-       từ GraphRAG mà không bị nghẽn cổ chai."
+    Spec (last agent.md Pháº§n 2.3):
+      "Sá»­ dá»¥ng chuáº©n káº¿t ná»‘i cá»§a thÆ° viá»‡n openai trá» endpoint vá» OpenRouter API.
+       Cáº¥u hÃ¬nh linh hoáº¡t gá»i cÃ¡c mÃ´ hÃ¬nh thÆ°Æ¡ng máº¡i Ä‘á»ƒ xá»­ lÃ½ lÆ°á»£ng token khá»•ng lá»“
+       tá»« GraphRAG mÃ  khÃ´ng bá»‹ ngháº½n cá»• chai."
 
-    Ưu điểm OpenRouter:
-      - Băng thông thương mại -> triệt tiêu lỗi 429/503.
-      - Đổi model chỉ cần đổi biến WORKER_MODEL (không sửa code).
+    Æ¯u Ä‘iá»ƒm OpenRouter:
+      - BÄƒng thÃ´ng thÆ°Æ¡ng máº¡i -> triá»‡t tiÃªu lá»—i 429/503.
+      - Äá»•i model chá»‰ cáº§n Ä‘á»•i biáº¿n WORKER_MODEL (khÃ´ng sá»­a code).
     """
 
     def __init__(self, model: str = WORKER_MODEL):
@@ -130,17 +134,17 @@ class WorkerEngine:
         self._client: Optional[OpenAI] = None
 
     def _get_client(self) -> OpenAI:
-        """Lazy-init OpenAI client trỏ về OpenRouter endpoint."""
+        """Lazy-init OpenAI client trá» vá» OpenRouter endpoint."""
         if self._client is None:
-            if not OPENROUTER_API_KEY or "điền" in OPENROUTER_API_KEY.lower():
+            if not OPENROUTER_API_KEY or "Ä‘iá»n" in OPENROUTER_API_KEY.lower():
                 raise ValueError(
-                    "[WorkerEngine] OPENROUTER_API_KEY chưa được điền vào .env!"
+                    "[WorkerEngine] OPENROUTER_API_KEY chÆ°a Ä‘Æ°á»£c Ä‘iá»n vÃ o .env!"
                 )
             self._client = OpenAI(
                 base_url=OPENROUTER_BASE,
                 api_key=OPENROUTER_API_KEY,
             )
-            logger.info(f"[WorkerEngine] OpenRouter client sẵn sàng. Model: {self.model}")
+            logger.info(f"[WorkerEngine] OpenRouter client sáºµn sÃ ng. Model: {self.model}")
         return self._client
 
     def generate(
@@ -151,19 +155,19 @@ class WorkerEngine:
         max_tokens: int = 2048,
     ) -> str:
         """
-        Sinh câu trả lời từ LLM thông qua OpenRouter.
+        Sinh cÃ¢u tráº£ lá»i tá»« LLM thÃ´ng qua OpenRouter.
 
         Args:
-            system_prompt: Hướng dẫn hành vi cho model.
-            user_prompt  : Câu hỏi + ngữ cảnh RAG được nhồi vào.
-            temperature  : Độ sáng tạo (0.7 cho câu trả lời học thuật).
-            max_tokens   : Giới hạn độ dài output.
+            system_prompt: HÆ°á»›ng dáº«n hÃ nh vi cho model.
+            user_prompt  : CÃ¢u há»i + ngá»¯ cáº£nh RAG Ä‘Æ°á»£c nhá»“i vÃ o.
+            temperature  : Äá»™ sÃ¡ng táº¡o (0.7 cho cÃ¢u tráº£ lá»i há»c thuáº­t).
+            max_tokens   : Giá»›i háº¡n Ä‘á»™ dÃ i output.
 
         Returns:
-            Chuỗi văn bản trả lời của LLM.
+            Chuá»—i vÄƒn báº£n tráº£ lá»i cá»§a LLM.
         """
         client = self._get_client()
-        logger.info(f"[WorkerEngine] Gọi {self.model} qua OpenRouter...")
+        logger.info(f"[WorkerEngine] Gá»i {self.model} qua OpenRouter...")
 
         try:
             response = client.chat.completions.create(
@@ -183,51 +187,51 @@ class WorkerEngine:
                         yield delta
 
         except Exception as e:
-            # [BUG-F FIX] Dùng yield thay vì return trong generator function.
-            # return <string> trong generator chỉ raise StopIteration, caller không nhận được message.
+            # [BUG-F FIX] DÃ¹ng yield thay vÃ¬ return trong generator function.
+            # return <string> trong generator chá»‰ raise StopIteration, caller khÃ´ng nháº­n Ä‘Æ°á»£c message.
             error_msg = str(e)
             if "safety" in error_msg.lower() or "SAFETY" in error_msg:
-                logger.warning("[WorkerEngine] Kích hoạt bộ lọc an toàn Google. Trả thông báo.")
+                logger.warning("[WorkerEngine] KÃ­ch hoáº¡t bá»™ lá»c an toÃ n Google. Tráº£ thÃ´ng bÃ¡o.")
                 yield (
-                    "Tài liệu nghiên cứu chuyên ngành chứa thuật ngữ nhạy cảm "
-                    "bị bộ lọc an toàn từ chối xử lý. Vui lòng thử diễn đạt lại câu hỏi."
+                    "TÃ i liá»‡u nghiÃªn cá»©u chuyÃªn ngÃ nh chá»©a thuáº­t ngá»¯ nháº¡y cáº£m "
+                    "bá»‹ bá»™ lá»c an toÃ n tá»« chá»‘i xá»­ lÃ½. Vui lÃ²ng thá»­ diá»…n Ä‘áº¡t láº¡i cÃ¢u há»i."
                 )
                 return
-            logger.error("[WorkerEngine] Lỗi gọi API: %s", e, exc_info=True)
-            yield f"Hệ thống lõi gặp sự cố kết nối API: {str(e)[:100]}. Vui lòng thử lại sau."
+            logger.error("[WorkerEngine] Lá»—i gá»i API: %s", e, exc_info=True)
+            yield f"Há»‡ thá»‘ng lÃµi gáº·p sá»± cá»‘ káº¿t ná»‘i API: {str(e)[:100]}. Vui lÃ²ng thá»­ láº¡i sau."
 
     def close(self):
-        """Giải phóng client sau khi dùng."""
+        """Giáº£i phÃ³ng client sau khi dÃ¹ng."""
         if self._client:
             self._client = None
             gc.collect()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  SelfCritiqueAgent - LLM-as-a-Judge chấm điểm ngữ cảnh RAG
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+#  SelfCritiqueAgent - LLM-as-a-Judge cháº¥m Ä‘iá»ƒm ngá»¯ cáº£nh RAG
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-_CRITIQUE_SYSTEM_PROMPT = """Bạn là bộ chấm điểm chất lượng ngữ cảnh (Self-Critique Agent).
-Nhiệm vụ: Đánh giá mức độ phù hợp của NGỮCẢNH RAG với CÂU HỎI người dùng.
-Trả về JSON theo cấu trúc sau, KHÔNG thêm giải thích, KHÔNG dùng markdown:
+_CRITIQUE_SYSTEM_PROMPT = """Báº¡n lÃ  bá»™ cháº¥m Ä‘iá»ƒm cháº¥t lÆ°á»£ng ngá»¯ cáº£nh (Self-Critique Agent).
+Nhiá»‡m vá»¥: ÄÃ¡nh giÃ¡ má»©c Ä‘á»™ phÃ¹ há»£p cá»§a NGá»®Cáº¢NH RAG vá»›i CÃ‚U Há»ŽI ngÆ°á»i dÃ¹ng.
+Tráº£ vá» JSON theo cáº¥u trÃºc sau, KHÃ”NG thÃªm giáº£i thÃ­ch, KHÃ”NG dÃ¹ng markdown:
 {
-  "relevance_score": <số thực 0.0-10.0>,
-  "answerability_score": <số thực 0.0-10.0>,
-  "missing_information": "<mô tả ngắn gọn phần còn thiếu hoặc empty string>",
+  "relevance_score": <sá»‘ thá»±c 0.0-10.0>,
+  "answerability_score": <sá»‘ thá»±c 0.0-10.0>,
+  "missing_information": "<mÃ´ táº£ ngáº¯n gá»n pháº§n cÃ²n thiáº¿u hoáº·c empty string>",
   "action_required": "proceed" | "force_web_search"
 }
-Quy tắc:
-- action_required = "proceed" nếu điểm trung bình >= 8.0
-- action_required = "force_web_search" nếu điểm trung bình < 8.0"""
+Quy táº¯c:
+- action_required = "proceed" náº¿u Ä‘iá»ƒm trung bÃ¬nh >= 8.0
+- action_required = "force_web_search" náº¿u Ä‘iá»ƒm trung bÃ¬nh < 8.0"""
 
 
 class SelfCritiqueAgent:
     """
-    Chấm điểm chất lượng ngữ cảnh RAG bằng Gemini Flash (LLM-as-a-judge).
+    Cháº¥m Ä‘iá»ƒm cháº¥t lÆ°á»£ng ngá»¯ cáº£nh RAG báº±ng Gemini Flash (LLM-as-a-judge).
 
-    Spec Bước 6.1:
-      "Một modul AI siêu nhẹ quét đống context, đối chiếu câu hỏi gốc,
-       chấm điểm theo cấu trúc JSON Contract của Self-Critique Agent."
+    Spec BÆ°á»›c 6.1:
+      "Má»™t modul AI siÃªu nháº¹ quÃ©t Ä‘á»‘ng context, Ä‘á»‘i chiáº¿u cÃ¢u há»i gá»‘c,
+       cháº¥m Ä‘iá»ƒm theo cáº¥u trÃºc JSON Contract cá»§a Self-Critique Agent."
     """
 
     def __init__(self):
@@ -235,8 +239,8 @@ class SelfCritiqueAgent:
 
     def _get_model(self):
         if self._model is None:
-            if not GEMINI_API_KEY or "điền" in GEMINI_API_KEY.lower():
-                raise ValueError("[SelfCritiqueAgent] Cần GEMINI_API_KEY trong .env!")
+            if not GEMINI_API_KEY or "Ä‘iá»n" in GEMINI_API_KEY.lower():
+                raise ValueError("[SelfCritiqueAgent] Cáº§n GEMINI_API_KEY trong .env!")
             self._model = genai.Client(api_key=GEMINI_API_KEY)
         return self._model
 
@@ -246,37 +250,37 @@ class SelfCritiqueAgent:
         context_chunks: List[Dict],
     ) -> SelfCritiqueResult:
         """
-        Chấm điểm ngữ cảnh RAG so với câu hỏi.
+        Cháº¥m Ä‘iá»ƒm ngá»¯ cáº£nh RAG so vá»›i cÃ¢u há»i.
 
         Args:
-            question      : Câu hỏi gốc của người dùng.
-            context_chunks: Danh sách chunk từ HybridRAG.retrieve_context().
+            question      : CÃ¢u há»i gá»‘c cá»§a ngÆ°á»i dÃ¹ng.
+            context_chunks: Danh sÃ¡ch chunk tá»« HybridRAG.retrieve_context().
 
         Returns:
-            SelfCritiqueResult với điểm và quyết định hành động.
+            SelfCritiqueResult vá»›i Ä‘iá»ƒm vÃ  quyáº¿t Ä‘á»‹nh hÃ nh Ä‘á»™ng.
         """
         if not context_chunks:
-            logger.warning("[SelfCritiqueAgent] Context rỗng -> force_web_search.")
+            logger.warning("[SelfCritiqueAgent] Context rá»—ng -> force_web_search.")
             return SelfCritiqueResult(
                 relevance_score=0.0,
                 answerability_score=0.0,
-                missing_information="Không có ngữ cảnh nào từ kho dữ liệu nội bộ.",
+                missing_information="KhÃ´ng cÃ³ ngá»¯ cáº£nh nÃ o tá»« kho dá»¯ liá»‡u ná»™i bá»™.",
                 action_required="force_web_search",
             )
 
-        # Ghép nội dung chunks thành chuỗi để chấm điểm
+        # GhÃ©p ná»™i dung chunks thÃ nh chuá»—i Ä‘á»ƒ cháº¥m Ä‘iá»ƒm
         context_text = "\n\n".join(
             f"[Chunk {i+1}] {c.get('text', '')[:500]}"
-            for i, c in enumerate(context_chunks[:5])  # Chỉ dùng top-5 để tiết kiệm token
+            for i, c in enumerate(context_chunks[:5])  # Chá»‰ dÃ¹ng top-5 Ä‘á»ƒ tiáº¿t kiá»‡m token
         )
 
-        prompt = f"""CÂU HỎI:
+        prompt = f"""CÃ‚U Há»ŽI:
 {question}
 
-NGỮ CẢNH RAG TÌM ĐƯỢC:
+NGá»® Cáº¢NH RAG TÃŒM Ä Æ¯á»¢C:
 {context_text}
 
-Đánh giá chất lượng ngữ cảnh:"""
+Ä Ã¡nh giÃ¡ cháº¥t lÆ°á»£ng ngá»¯ cáº£nh:"""
 
         try:
             # [C2 FIX] Truyen dung system_prompt cho SelfCritiqueAgent
@@ -302,7 +306,7 @@ NGỮ CẢNH RAG TÌM ĐƯỢC:
             return result
 
         except Exception as e:
-            logger.error(f"[SelfCritiqueAgent] Lỗi chấm điểm: {e}. Fallback proceed.")
+            logger.error(f"[SelfCritiqueAgent] Lá»—i cháº¥m Ä‘iá»ƒm: {e}. Fallback proceed.")
             return SelfCritiqueResult(
                 relevance_score=7.0,
                 answerability_score=7.0,
@@ -311,80 +315,74 @@ NGỮ CẢNH RAG TÌM ĐƯỢC:
             )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  ReActOrchestrator - Máy trạng thái ReAct (State Machine)
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+#  ReActOrchestrator - MÃ¡y tráº¡ng thÃ¡i ReAct (State Machine)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-# System prompt cho WorkerEngine sinh câu trả lời học thuật
-_ANSWER_SYSTEM_PROMPT = """Bạn là Digital Scholar - trợ lý nghiên cứu học thuật chuyên nghiệp.
-Nhiệm vụ: Dựa vào NGỮ CẢNH được cung cấp, trả lời câu hỏi bằng tiếng Việt học thuật mượt mà.
-Quy tắc:
-- Ưu tiên thông tin từ ngữ cảnh. Nếu ngữ cảnh thiếu, dùng kiến thức chung có ghi chú.
-- Sử dụng thuật ngữ học thuật chính xác.
-- Trình bày rõ ràng, mạch lạc. Không trả lời mơ hồ.
-- KHÔNG bịa đặt số liệu hay trích dẫn không có trong ngữ cảnh."""
+# Các prompt đã chuyển sang PromptBuilder
 
 
 class ReActOrchestrator:
     """
-    Máy trạng thái điều phối toàn bộ luồng suy luận ReAct của Digital Scholar.
+    MÃ¡y tráº¡ng thÃ¡i Ä‘iá»u phá»‘i toÃ n bá»™ luá»“ng suy luáº­n ReAct cá»§a Digital Scholar.
 
-    Sơ đồ trạng thái (Bước 6.1 - 6.2 trong last agent.md):
+    SÆ¡ Ä‘á»“ tráº¡ng thÃ¡i (BÆ°á»›c 6.1 - 6.2 trong last agent.md):
 
-    ┌─────────────────────────────────────────────────────────────────┐
-    │  [START]                                                         │
-    │      ↓                                                           │
-    │  [RETRIEVE]  HybridRAG.retrieve_context() -> context_chunks     │
-    │      ↓                                                           │
-    │  [CRITIQUE]  SelfCritiqueAgent.evaluate() -> score + action     │
-    │      ↓                                                           │
-    │  score >= 8? ──YES──> [GENERATE] WorkerEngine -> final_answer   │
-    │      │                                                           │
-    │     NO                                                           │
-    │      ↓                                                           │
-    │  [WEB_SEARCH] DuckDuckGo -> web_results (max_iterations=3)      │
-    │      ↓                                                           │
-    │  Merge web + local context -> [CRITIQUE] lại                    │
-    │      ↓                                                           │
-    │  (sau 3 vòng vẫn thất bại) -> [GENERATE] với best effort        │
-    │      ↓                                                           │
-    │  [END]                                                           │
-    └─────────────────────────────────────────────────────────────────┘
+    â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+    â”‚  [START]                                                         â”‚
+    â”‚      â†“                                                           â”‚
+    â”‚  [RETRIEVE]  HybridRAG.retrieve_context() -> context_chunks     â”‚
+    â”‚      â†“                                                           â”‚
+    â”‚  [CRITIQUE]  SelfCritiqueAgent.evaluate() -> score + action     â”‚
+    â”‚      â†“                                                           â”‚
+    â”‚  score >= 8? â”€â”€YESâ”€â”€> [GENERATE] WorkerEngine -> final_answer   â”‚
+    â”‚      â”‚                                                           â”‚
+    â”‚     NO                                                           â”‚
+    â”‚      â†“                                                           â”‚
+    â”‚  [WEB_SEARCH] DuckDuckGo -> web_results (max_iterations=3)      â”‚
+    â”‚      â†“                                                           â”‚
+    â”‚  Merge web + local context -> [CRITIQUE] láº¡i                    â”‚
+    â”‚      â†“                                                           â”‚
+    â”‚  (sau 3 vÃ²ng váº«n tháº¥t báº¡i) -> [GENERATE] vá»›i best effort        â”‚
+    â”‚      â†“                                                           â”‚
+    â”‚  [END]                                                           â”‚
+    â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 
-    Thiết kế để migrate LangGraph: mỗi node là method độc lập,
-    nhận AgentState và trả về AgentState. Thêm StateGraph wrapper là xong.
+    Thiáº¿t káº¿ Ä‘á»ƒ migrate LangGraph: má»—i node lÃ  method Ä‘á»™c láº­p,
+    nháº­n AgentState vÃ  tráº£ vá» AgentState. ThÃªm StateGraph wrapper lÃ  xong.
     """
 
     def __init__(
         self,
-        hybrid_rag=None,
-        worker_model: str = WORKER_MODEL,
+        hybrid_rag: Optional["IKnowledgeStore"] = None,
+        worker: Optional["ILLMClient"] = None,
+        critique_agent: Optional["SelfCritiqueAgent"] = None,
+        memory: Optional["ConversationMemory"] = None,
     ):
         """
-        Args:
-            hybrid_rag  : Instance HybridRAG từ Giai đoạn 2 (dependency injection).
-            worker_model: Tên model trên OpenRouter (có thể đổi linh hoạt).
+        Khởi tạo ReActOrchestrator với Constructor Injection.
         """
         self._rag = hybrid_rag
-        self._worker = WorkerEngine(model=worker_model)
-        self._critique = SelfCritiqueAgent()
+        self._memory = memory
+        self._worker = worker or WorkerEngine()
+        self._critique = critique_agent or SelfCritiqueAgent()
         self._last_sources: list = []   # Giai doan 5: theo doi nguon de DocxExporter
 
     def set_rag(self, hybrid_rag):
-        """Inject HybridRAG sau khi khởi tạo (tránh circular dependency)."""
+        """Inject HybridRAG sau khi khá»Ÿi táº¡o (trÃ¡nh circular dependency)."""
         self._rag = hybrid_rag
 
-    # ── Node 1: Truy xuất ngữ cảnh từ HybridRAG ──────────────────────────────
+    # â”€â”€ Node 1: Truy xuáº¥t ngá»¯ cáº£nh tá»« HybridRAG â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _node_retrieve(self, state: AgentState) -> AgentState:
         """
-        Bước 5.1 -> 5.3: Truy xuất ngữ cảnh lai kép (Vector + Graph).
+        BÆ°á»›c 5.1 -> 5.3: Truy xuáº¥t ngá»¯ cáº£nh lai kÃ©p (Vector + Graph).
 
-        [C1-FIX] Đã sửa: dead code (try/except sau return) đã được xóa và
-        bọc đúng vị trí quanh lệnh gọi retrieve_context() thực sự.
-        [M1-FIX] Đã xóa _wide_retrieval dead key — top_k cố định = 5.
+        [C1-FIX] ÄÃ£ sá»­a: dead code (try/except sau return) Ä‘Ã£ Ä‘Æ°á»£c xÃ³a vÃ 
+        bá»c Ä‘Ãºng vá»‹ trÃ­ quanh lá»‡nh gá»i retrieve_context() thá»±c sá»±.
+        [M1-FIX] ÄÃ£ xÃ³a _wide_retrieval dead key â€” top_k cá»‘ Ä‘á»‹nh = 5.
         """
         if self._rag is None:
-            logger.warning("[ReAct:RETRIEVE] HybridRAG chưa được inject. Context rỗng.")
+            logger.warning("[ReAct:RETRIEVE] HybridRAG chÆ°a Ä‘Æ°á»£c inject. Context rá»—ng.")
             return {**state, "context_chunks": []}
 
         try:
@@ -392,23 +390,23 @@ class ReActOrchestrator:
                 query=state["user_input"],
                 top_k=5,
             )
-            # Lưu nguồn để get_last_sources() trả về cho DocxExporter (Giai đoạn 5)
+            # LÆ°u nguá»“n Ä‘á»ƒ get_last_sources() tráº£ vá» cho DocxExporter (Giai Ä‘oáº¡n 5)
             self._last_sources = list({
                 c.get("source", "") for c in context_chunks if c.get("source")
             })
             logger.info(
-                "[ReAct:RETRIEVE] Thu được %d chunks từ %d nguồn.",
+                "[ReAct:RETRIEVE] Thu Ä‘Æ°á»£c %d chunks tá»« %d nguá»“n.",
                 len(context_chunks), len(self._last_sources)
             )
             return {**state, "context_chunks": context_chunks}
         except Exception as e:
-            logger.error("[ReAct:RETRIEVE] Lỗi truy xuất RAG: %s", e, exc_info=True)
+            logger.error("[ReAct:RETRIEVE] Lá»—i truy xuáº¥t RAG: %s", e, exc_info=True)
             return {**state, "context_chunks": [], "error": str(e)}
 
-    # ── Node 2: Chấm điểm ngữ cảnh (Self-Critique) ───────────────────────────
+    # â”€â”€ Node 2: Cháº¥m Ä‘iá»ƒm ngá»¯ cáº£nh (Self-Critique) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _node_critique(self, state: AgentState) -> AgentState:
         """
-        Bước 6.1: Chấm điểm chất lượng ngữ cảnh RAG.
+        BÆ°á»›c 6.1: Cháº¥m Ä‘iá»ƒm cháº¥t lÆ°á»£ng ngá»¯ cáº£nh RAG.
         """
         try:
             critique = self._critique.evaluate(
@@ -417,7 +415,7 @@ class ReActOrchestrator:
             )
             return {**state, "critique": critique}
         except Exception as e:
-            logger.error(f"[ReAct:CRITIQUE] Lỗi: {e}. Fallback proceed.")
+            logger.error(f"[ReAct:CRITIQUE] Lá»—i: {e}. Fallback proceed.")
             return {
                 **state,
                 "critique": SelfCritiqueResult(
@@ -426,29 +424,29 @@ class ReActOrchestrator:
                 )
             }
 
-    # ── Node 3: Tìm kiếm web (DuckDuckGo) ────────────────────────────────────
+    # â”€â”€ Node 3: TÃ¬m kiáº¿m web (DuckDuckGo) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _node_web_search(self, state: AgentState) -> AgentState:
         """
-        Bước 6.2: Kích hoạt DuckDuckGo khi ngữ cảnh local không đủ.
-        Giới hạn max_iterations=3 bằng cầu dao an toàn cứng.
+        BÆ°á»›c 6.2: KÃ­ch hoáº¡t DuckDuckGo khi ngá»¯ cáº£nh local khÃ´ng Ä‘á»§.
+        Giá»›i háº¡n max_iterations=3 báº±ng cáº§u dao an toÃ n cá»©ng.
         """
         current_iter = state.get("search_iterations", 0)
 
-        # Cầu dao an toàn cứng - tránh vòng lặp vô tận
+        # Cáº§u dao an toÃ n cá»©ng - trÃ¡nh vÃ²ng láº·p vÃ´ táº­n
         if current_iter >= MAX_SEARCH_ITER:
             logger.warning(
-                f"[ReAct:WEB_SEARCH] Đã đạt giới hạn {MAX_SEARCH_ITER} vòng tìm kiếm. "
-                "Dừng và dùng best effort."
+                f"[ReAct:WEB_SEARCH] ÄÃ£ Ä‘áº¡t giá»›i háº¡n {MAX_SEARCH_ITER} vÃ²ng tÃ¬m kiáº¿m. "
+                "Dá»«ng vÃ  dÃ¹ng best effort."
             )
             return {**state, "search_iterations": current_iter}
 
         if not DDGS_AVAILABLE:
-            logger.warning("[ReAct:WEB_SEARCH] duckduckgo-search chưa cài. Bỏ qua.")
+            logger.warning("[ReAct:WEB_SEARCH] duckduckgo-search chÆ°a cÃ i. Bá» qua.")
             return {**state, "search_iterations": current_iter + 1}
 
         logger.info(
-            f"[ReAct:WEB_SEARCH] Vòng {current_iter + 1}/{MAX_SEARCH_ITER}: "
-            f"Tìm kiếm '{state['user_input'][:50]}...'"
+            f"[ReAct:WEB_SEARCH] VÃ²ng {current_iter + 1}/{MAX_SEARCH_ITER}: "
+            f"TÃ¬m kiáº¿m '{state['user_input'][:50]}...'"
         )
 
         try:
@@ -462,9 +460,9 @@ class ReActOrchestrator:
                     snippet = f"[{r.get('title', '')}]\n{r.get('body', '')}"
                     web_texts.append(snippet)
 
-            logger.info(f"[ReAct:WEB_SEARCH] Tìm được {len(web_texts)} kết quả.")
+            logger.info(f"[ReAct:WEB_SEARCH] TÃ¬m Ä‘Æ°á»£c {len(web_texts)} káº¿t quáº£.")
 
-            # Merge kết quả web vào web_results (thêm vào, không ghi đè)
+            # Merge káº¿t quáº£ web vÃ o web_results (thÃªm vÃ o, khÃ´ng ghi Ä‘Ã¨)
             existing = state.get("web_results", [])
             return {
                 **state,
@@ -473,16 +471,16 @@ class ReActOrchestrator:
             }
 
         except Exception as e:
-            logger.error(f"[ReAct:WEB_SEARCH] Lỗi DuckDuckGo: {e}")
+            logger.error(f"[ReAct:WEB_SEARCH] Lá»—i DuckDuckGo: {e}")
             return {**state, "search_iterations": current_iter + 1}
 
-    # ── Node 4: Sinh câu trả lời cuối cùng ───────────────────────────────────
+    # â”€â”€ Node 4: Sinh cÃ¢u tráº£ lá»i cuá»‘i cÃ¹ng â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _node_generate(self, state: AgentState) -> AgentState:
         """
-        Bước 5.3: Nhồi ngữ cảnh vào prompt và gọi WorkerEngine sinh câu trả lời.
+        BÆ°á»›c 5.3: Nhá»“i ngá»¯ cáº£nh vÃ o prompt vÃ  gá»i WorkerEngine sinh cÃ¢u tráº£ lá»i.
         """
         # [I4 FIX] Gioi han web_results truoc khi nho vao prompt
-        # Sau 3 vong × 5 ket qua = 15 web results co the vuot token limit 32K
+        # Sau 3 vong Ã— 5 ket qua = 15 web results co the vuot token limit 32K
         all_web = state.get("web_results", [])
         web_results_capped = all_web[-MAX_WEB_IN_PROMPT:]  # Lay 5 ket qua moi nhat
         if len(all_web) > MAX_WEB_IN_PROMPT:
@@ -502,47 +500,47 @@ class ReActOrchestrator:
 
         context_combined = ""
         if rag_text:
-            context_combined += f"=== Tài liệu nội bộ ===\n{rag_text}\n\n"
+            context_combined += f"=== TÃ i liá»‡u ná»™i bá»™ ===\n{rag_text}\n\n"
         if web_text:
-            context_combined += f"=== Kết quả tìm kiếm web ===\n{web_text}\n\n"
+            context_combined += f"=== Káº¿t quáº£ tÃ¬m kiáº¿m web ===\n{web_text}\n\n"
 
         if not context_combined:
-            context_combined = "(Không tìm thấy ngữ cảnh. Trả lời dựa trên kiến thức chung.)"
+            context_combined = "(KhÃ´ng tÃ¬m tháº¥y ngá»¯ cáº£nh. Tráº£ lá»i dá»±a trÃªn kiáº¿n thá»©c chung.)"
 
-        user_prompt = f"""NGỮ CẢNH:
+        user_prompt = f"""NGá»® Cáº¢NH:
 {context_combined}
 
-CÂU HỎI:
+CÃ‚U Há»ŽI:
 {state['user_input']}
 
-Trả lời bằng tiếng Việt học thuật:"""
+Tráº£ lá»i báº±ng tiáº¿ng Viá»‡t há»c thuáº­t:"""
 
         try:
-            # Sửa đổi: Hàm generate trả về Generator
+            # Sá»­a Ä‘á»•i: HÃ m generate tráº£ vá» Generator
             gen = self._worker.generate(
                 system_prompt=_ANSWER_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
             )
             return gen
         except Exception as e:
-            logger.error(f"[ReAct:GENERATE] Lỗi WorkerEngine: {e}")
+            logger.error(f"[ReAct:GENERATE] Lá»—i WorkerEngine: {e}")
             return {
                 **state,
-                "final_answer": f"Xin lỗi, hệ thống gặp sự cố khi xử lý câu hỏi. Lỗi: {str(e)[:100]}",
+                "final_answer": f"Xin lá»—i, há»‡ thá»‘ng gáº·p sá»± cá»‘ khi xá»­ lÃ½ cÃ¢u há»i. Lá»—i: {str(e)[:100]}",
                 "error": str(e),
             }
 
-    # ── Điều kiện chuyển trạng thái ──────────────────────────────────────────
+    # â”€â”€ Äiá»u kiá»‡n chuyá»ƒn tráº¡ng thÃ¡i â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _should_search(self, state: AgentState) -> bool:
-        """Bước 6.2: Quyết định có cần web search không."""
+        """BÆ°á»›c 6.2: Quyáº¿t Ä‘á»‹nh cÃ³ cáº§n web search khÃ´ng."""
         critique = state.get("critique")
         if critique is None:
             return False
         if state.get("search_iterations", 0) >= MAX_SEARCH_ITER:
-            return False  # Đã đạt giới hạn, bắt buộc generate
+            return False  # ÄÃ£ Ä‘áº¡t giá»›i háº¡n, báº¯t buá»™c generate
         return critique.action_required == "force_web_search"
 
-    # ── Entry point chính ─────────────────────────────────────────────────────
+    # â”€â”€ Entry point chÃ­nh â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def run(
         self,
         user_input: str,
@@ -550,71 +548,46 @@ Trả lời bằng tiếng Việt học thuật:"""
         intent: str = "research_query"
     ):
         """
-        Chạy toàn bộ luồng ReAct cho một câu hỏi của người dùng.
-        Giai doan 5.5: Bổ sung intent để chọn luồng.
+        Cháº¡y toÃ n bá»™ luá»“ng ReAct cho má»™t cÃ¢u há»i cá»§a ngÆ°á»i dÃ¹ng.
+        Giai doan 5.5: Bá»• sung intent Ä‘á»ƒ chá»n luá»“ng.
         """
+        config = get_config_for_intent(intent)
+        
         if intent == "daily_task":
             logger.info("[ReActOrchestrator] === Bắt đầu Fast-Track (daily_task) ===")
             import concurrent.futures
 
             def _get_rag() -> str:
-                """Truy xuất RAG song song (chạy trong ThreadPoolExecutor)."""
                 try:
                     if self._rag:
-                        # [BUG-A FIX] self.hybrid_rag → self._rag (tên attribute đúng)
-                        # [DESIGN-6 FIX] .search() → .retrieve_context() theo chuẩn HybridRAG interface
-                        chunks = self._rag.retrieve_context(query=user_input, top_k=3)
-                        return "\n\n".join(
-                            f"Trích xuất {i+1}:\n{c['text']}"
-                            for i, c in enumerate(chunks)
-                        )
+                        chunks = self._rag.retrieve_context(query=user_input, top_k=config.retrieve.top_k)
+                        return PromptBuilder.format_rag_context(chunks)
                 except Exception as e:
                     logger.error("[FastTrack] Lỗi RAG: %s", e, exc_info=True)
                 return ""
 
             def _get_web() -> str:
-                """Tìm kiếm web song song (chạy trong ThreadPoolExecutor)."""
                 try:
                     if DDGS_AVAILABLE:
                         results = DDGS().text(user_input, max_results=3)
-                        return "\n".join(
-                            f"- {r['title']}: {r['body']}" for r in results
-                        )
+                        return "\n".join(f"- {r['title']}: {r['body']}" for r in results)
                 except Exception as e:
                     logger.error("[FastTrack] Lỗi Web: %s", e, exc_info=True)
                 return ""
 
-            rag_text = ""
-            web_text = ""
+            rag_text = web_text = ""
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                rag_future = executor.submit(_get_rag)
-                web_future = executor.submit(_get_web)
-                rag_text = rag_future.result()
-                web_text = web_future.result()
+                rag_text = executor.submit(_get_rag).result()
+                web_text = executor.submit(_get_web).result()
 
-            context_combined = ""
-            if rag_text:
-                context_combined += f"=== Tài liệu nội bộ ===\n{rag_text}\n\n"
-            if web_text:
-                context_combined += f"=== Tìm kiếm Web ===\n{web_text}\n\n"
-            if not context_combined:
-                context_combined = "(Không tìm thấy ngữ cảnh bổ sung.)"
-
-            user_prompt = (
-                f"NGỮ CẢNH:\n{context_combined}\n"
-                f"CÂU HỎI:\n{user_input}\n"
-                f"Trả lời ngắn gọn bằng tiếng Việt:"
-            )
-            gen = self._worker.generate(
-                system_prompt="Bạn là trợ lý ảo. Trả lời nhanh gọn, trực tiếp vào trọng tâm.",
-                user_prompt=user_prompt,
-            )
-            for chunk in gen:
-                yield chunk
+            ctx = PromptContext(user_query=user_input, rag_context=rag_text, web_context=web_text)
+            system_prompt, user_prompt = PromptBuilder.build_answer(ctx, fast=True)
+            gen = self._worker.generate(system_prompt=system_prompt, user_prompt=user_prompt)
+            for chunk in gen: yield chunk
             return
 
         # Deep-Track (research_query)
-        # Khởi tạo trạng thái ban đầu
+        # Khá»Ÿi táº¡o tráº¡ng thÃ¡i ban Ä‘áº§u
         state: AgentState = {
             "user_input": user_input,
             "context_chunks": additional_context or [],
@@ -625,14 +598,15 @@ Trả lời bằng tiếng Việt học thuật:"""
             "error": None,
         }
 
-        # [S5-FIX] Chỉ thêm "..." khi input thực sự bị cắt
+        # [S5-FIX] Chá»‰ thÃªm "..." khi input thá»±c sá»± bá»‹ cáº¯t
         preview = user_input[:60] + ("..." if len(user_input) > 60 else "")
-        logger.info("[ReActOrchestrator] === Bắt đầu xử lý: '%s' ===", preview)
+        logger.info("[ReActOrchestrator] === Báº¯t Ä‘áº§u xá»­ lÃ½: '%s' ===", preview)
 
-        # ── Bước 1: Truy xuất ngữ cảnh ──────────────────────────────────────
+        # â”€â”€ BÆ°á»›c 1: Truy xuáº¥t ngá»¯ cáº£nh â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        state["_is_fast"] = (intent == "daily_task")
         state = self._node_retrieve(state)
 
-        # ── Bước 2: Critique + ReAct loop ────────────────────────────────────
+        # â”€â”€ BÆ°á»›c 2: Critique + ReAct loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         state = self._node_critique(state)
 
         while self._should_search(state):
@@ -655,10 +629,10 @@ Trả lời bằng tiếng Việt học thuật:"""
             # Critique lai voi context moi
             state = self._node_critique(state)
 
-        # Bước 3: Generate
+        # BÆ°á»›c 3: Generate
         gen = self._node_generate(state)
 
-        # Nếu _node_generate trả về Exception dict thay vì generator
+        # Náº¿u _node_generate tráº£ vá» Exception dict thay vÃ¬ generator
         total_chars = 0
         if isinstance(gen, dict) and "error" in gen:
             answer = gen.get("final_answer", "")
@@ -670,7 +644,7 @@ Trả lời bằng tiếng Việt học thuật:"""
                 yield chunk
 
         logger.info(
-            "[ReActOrchestrator] === Hoàn thành. "
+            "[ReActOrchestrator] === HoÃ n thÃ nh. "
             "Search loops=%d | Answer length=%d chars ===",
             state["search_iterations"], total_chars,
         )
@@ -683,21 +657,21 @@ Trả lời bằng tiếng Việt học thuật:"""
         return list(self._last_sources)
 
     def close(self):
-        """Dọn dẹp tài nguyên."""
+        """Dá»n dáº¹p tÃ i nguyÃªn."""
         self._worker.close()
         gc.collect()
-        logger.info("[ReActOrchestrator] Đã dọn sạch tài nguyên.")
+        logger.info("[ReActOrchestrator] ÄÃ£ dá»n sáº¡ch tÃ i nguyÃªn.")
 
 
-# ─── Test nhanh khi chạy trực tiếp ───────────────────────────────────────────
+# â”€â”€â”€ Test nhanh khi cháº¡y trá»±c tiáº¿p â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if __name__ == "__main__":
     from dotenv import load_dotenv
-    load_dotenv()  # Chỉ load khi chạy file độc lập để test
+    load_dotenv()  # Chá»‰ load khi cháº¡y file Ä‘á»™c láº­p Ä‘á»ƒ test
 
     print("--- Orchestrator Component Test ---")
     print("Testing SelfCritiqueResult Pydantic model...\n")
 
-    # Test Pydantic model (không cần API key)
+    # Test Pydantic model (khÃ´ng cáº§n API key)
     test_data = {
         "relevance_score": 9.2,
         "answerability_score": 8.5,

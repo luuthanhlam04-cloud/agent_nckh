@@ -54,7 +54,8 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
 # ══════════════════════════════════════════════════════════════════════════════
 #  TẦNG 1: QdrantManager - Vector Database Cục bộ
 # ══════════════════════════════════════════════════════════════════════════════
-class QdrantManager:
+from src.core.interfaces import IKnowledgeStore
+class QdrantManager(IKnowledgeStore):
     """
     Quản lý Vector Database Qdrant chạy ở chế độ Embedded (Local).
     - Không cần Docker, không cần server riêng.
@@ -492,9 +493,9 @@ class HybridRAG:
     └─────────────────────────────────────────────────────────────┘
     """
 
-    def __init__(self):
-        self.qdrant = QdrantManager()
-        self.neo4j = Neo4jManager()
+    def __init__(self, qdrant: Optional["QdrantManager"] = None, neo4j: Optional["Neo4jManager"] = None):
+        self.qdrant = qdrant or QdrantManager()
+        self.neo4j = neo4j or Neo4jManager()
         logger.info("[HybridRAG] Khởi tạo thành công.")
 
     def ingest_document(
