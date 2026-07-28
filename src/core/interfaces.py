@@ -30,3 +30,16 @@ class ILLMClient(ABC):
         **kwargs
     ) -> Generator[str, None, None]:
         pass
+
+class IParser(ABC):
+    """
+    Interface cho document parsers.
+    Implementations: PDFParser, PPTXParser (hiện tại) + NCKHParser (Sprint 5)
+    """
+    @abstractmethod
+    def parse(self, file_path: str) -> List[Dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    def supported_extensions(self) -> List[str]:
+        pass

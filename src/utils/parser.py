@@ -29,6 +29,8 @@ from typing import List, Dict, Any, Optional
 
 import fitz  # PyMuPDF
 import google.genai as genai
+from src.core.interfaces import IParser
+from pathlib import Path
 from google.genai import types as genai_types
 
 # python-pptx chỉ dùng để đọc slide text và (tương lai) xuất slide thành ảnh
@@ -45,7 +47,7 @@ except ImportError:
 logger = logging.getLogger("Parser")
 
 # ─── Config (đọc từ env đã được load_dotenv() trong main.py) ──────────────────
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+from src.shared.config import GEMINI_API_KEY
 
 # ─── Hằng số cấu hình Chunking ────────────────────────────────────────────────
 # [Sprint A] Giảm chunk size để vector đặc trưng hơn, tránh Semantic Dilution.
@@ -227,13 +229,16 @@ def _extract_blocks_with_headings(page: "fitz.Page", file_name: str) -> List[Dic
 # ══════════════════════════════════════════════════════════════════════════════
 #  PDFParser - Bóc tách PDF bằng PyMuPDF
 # ══════════════════════════════════════════════════════════════════════════════
-class PDFParser:
+class PDFParser(IParser):
     """
     Bóc tách tài liệu PDF thành các chunk văn bản chuẩn.
     - Sử dụng PyMuPDF (fitz) đọc từng trang.
     - Lọc các dòng rác (số trang, tiêu đề lặp, dòng quá ngắn).
     - Kết xuất Markdown đơn giản (heading, paragraph) trước khi chunk.
     """
+
+    def supported_extensions(self) -> List[str]:
+        return [".pdf"]
 
     def parse(self, pdf_path: str) -> List[Dict[str, Any]]:
         """
@@ -347,7 +352,7 @@ class PDFParser:
 # ══════════════════════════════════════════════════════════════════════════════
 #  PPTXParser - Bóc tách Slide PPTX bằng Gemini Vision API
 # ══════════════════════════════════════════════════════════════════════════════
-class PPTXParser:
+class PPTXParser(IParser):
     """
     Bóc tách file Slide PowerPoint theo 2 chế độ:
 
@@ -385,6 +390,9 @@ Trả về văn bản thuần túy (plain text), không dùng JSON, không thêm
     #   1. Đặt USE_VISION_MODE = True
     #   2. Thêm method _render_slide_to_png(slide) dùng win32com.client
     #   3. Gửi kết quả PNG dạng bytes lên Gemini với mime_type="image/png"
+
+    def supported_extensions(self) -> List[str]:
+        return [".pptx"]
 
     def parse(self, pptx_path: str) -> List[Dict[str, Any]]:
         """
