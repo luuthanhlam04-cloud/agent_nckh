@@ -9,6 +9,7 @@ import os
 import re
 import json
 import math
+import numpy as np
 import subprocess
 import webbrowser
 import logging
@@ -68,6 +69,13 @@ class SemanticInterceptor:
             for phrase in phrases:
                 vec = self.embed_func(phrase)
                 self._anchor_vectors.append((intent, vec))
+        
+        # Build numpy matrix for fast cosine similarity
+        self._anchor_matrix = np.array([v for _, v in self._anchor_vectors])
+        # Normalize vectors for simple dot product == cosine similarity
+        norms = np.linalg.norm(self._anchor_matrix, axis=1, keepdims=True)
+        self._anchor_matrix = np.divide(self._anchor_matrix, norms, out=np.zeros_like(self._anchor_matrix), where=norms!=0)
+        
         self._is_ready = True
         logger.info(f"[SemanticInterceptor] Đã mã hóa xong {len(self._anchor_vectors)} neo ngữ nghĩa.")
 
@@ -102,17 +110,20 @@ class SemanticInterceptor:
             return None, None
 
         # 1. Tính toán Vector cho User Input
-        user_vec = self.embed_func(text)
+        user_vec = np.array(self.embed_func(text))
+        user_norm = np.linalg.norm(user_vec)
+        if user_norm > 0:
+            user_vec = user_vec / user_norm
         
-        # 2. So khớp với tập Anchors (Tìm max Cosine Similarity)
-        best_intent = None
-        best_score = -1.0
-        
-        for intent, anchor_vec in self._anchor_vectors:
-            score = cosine_similarity(user_vec, anchor_vec)
-            if score > best_score:
-                best_score = score
-                best_intent = intent
+        # 2. So khớp với tập Anchors (Tìm max Cosine Similarity dùng ma trận)
+        if hasattr(self, '_anchor_matrix'):
+            scores = self._anchor_matrix @ user_vec
+            best_idx = np.argmax(scores)
+            best_score = float(scores[best_idx])
+            best_intent = self._anchor_vectors[best_idx][0]
+        else:
+            best_intent = None
+            best_score = -1.0
 
         # [Tuning Feature] In ra màn hình để sếp dễ vặn núm THRESHOLD
         logger.info(f"[Semantic Tuning] '{text[:50]}' -> Intent: {best_intent} | Điểm Cosine: {best_score:.4f} | Threshold: {THRESHOLD}")

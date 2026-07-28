@@ -43,13 +43,11 @@ logger = logging.getLogger("HybridRAG")
 # ─── Config (đọc từ env đã được load_dotenv() trong main.py) ───────────────────
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"
 QDRANT_COLLECTION_NAME = "scholar_knowledge"
+GRAPH_RESULT_SCORE_BOOST = 0.85
 QDRANT_VECTOR_SIZE = 768  # Kích thước vector của gte-multilingual-base
 QDRANT_PATH = os.path.join(os.path.dirname(__file__), "../../qdrant_storage")
 
-NEO4J_URI = os.getenv("NEO4J_URI", "")
-NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
-
+from src.shared.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TẦNG 1: QdrantManager - Vector Database Cục bộ
@@ -84,67 +82,49 @@ class QdrantManager(IKnowledgeStore):
             logger.info("[Qdrant] Model embedding đã sẵn sàng.")
         return self._model
 
+    def _has_dimension_mismatch(self) -> bool:
+        try:
+            col_info = self._client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+            return col_info.config.params.vectors.size != QDRANT_VECTOR_SIZE
+        except Exception:
+            return False
+
+    def _create_collection(self):
+        self._client.create_collection(
+            collection_name=QDRANT_COLLECTION_NAME,
+            vectors_config=VectorParams(
+                size=QDRANT_VECTOR_SIZE,
+                distance=Distance.COSINE,
+            ),
+        )
+
+    def _backup_and_recreate(self):
+        if self._client:
+            self._client.close()
+            self._client = None
+        if os.path.exists(QDRANT_PATH):
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = f"{QDRANT_PATH}_backup_{timestamp}"
+            os.rename(QDRANT_PATH, backup_path)
+            logger.warning(f"[Qdrant] Đã backup CSDL cũ ra: {backup_path}")
+        os.makedirs(QDRANT_PATH, exist_ok=True)
+        self._client = QdrantClient(path=QDRANT_PATH)
+        self._create_collection()
+        logger.info(f"[Qdrant] Đã recreate collection: '{QDRANT_COLLECTION_NAME}' với size {QDRANT_VECTOR_SIZE}")
+
     def _ensure_collection(self):
         """Tạo collection nếu chưa tồn tại hoặc sai dimension."""
-        client = self._client
-        existing = [c.name for c in client.get_collections().collections]
+        existing = [c.name for c in self._client.get_collections().collections]
         if QDRANT_COLLECTION_NAME not in existing:
-            client.create_collection(
-                collection_name=QDRANT_COLLECTION_NAME,
-                vectors_config=VectorParams(
-                    size=QDRANT_VECTOR_SIZE,
-                    distance=Distance.COSINE,
-                ),
-            )
+            self._create_collection()
             logger.info(f"[Qdrant] Đã tạo collection: '{QDRANT_COLLECTION_NAME}'")
         else:
-            # [FIX] Logic tự động cấu trúc lại CSDL khi đổi embedding model
-            try:
-                col_info = client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
-                current_size = col_info.config.params.vectors.size
-                if current_size != QDRANT_VECTOR_SIZE:
-                    logger.warning(f"[Qdrant] Collection dimension mismatch (Current: {current_size}, Expected: {QDRANT_VECTOR_SIZE}). Recreating...")
-                    
-                    # Cảnh báo: qdrant-client (local mode) có một bug rò rỉ bộ nhớ numpy khi delete và recreate collection với size khác nhau trong cùng 1 process.
-                    # Khắc phục: Đóng client, xóa trắng thư mục và khởi tạo lại.
-                    if self._client:
-                        self._client.close()
-                        self._client = None
-                    if os.path.exists(QDRANT_PATH):
-                        from datetime import datetime
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        backup_path = f"{QDRANT_PATH}_backup_{timestamp}"
-                        os.rename(QDRANT_PATH, backup_path)
-                        logger.warning(f"[Qdrant] Đã backup CSDL cũ ra: {backup_path}")
-                    os.makedirs(QDRANT_PATH, exist_ok=True)
-                    self._client = QdrantClient(path=QDRANT_PATH)
-                    client = self._client
-                    
-                    client.create_collection(
-                        collection_name=QDRANT_COLLECTION_NAME,
-                        vectors_config=VectorParams(
-                            size=QDRANT_VECTOR_SIZE,
-                            distance=Distance.COSINE,
-                        ),
-                    )
-                    logger.info(f"[Qdrant] Đã recreate collection: '{QDRANT_COLLECTION_NAME}' với size {QDRANT_VECTOR_SIZE}")
-                else:
-                    logger.info(f"[Qdrant] Collection '{QDRANT_COLLECTION_NAME}' đã tồn tại và đúng dimension ({current_size}).")
-            except Exception as e:
-                logger.warning(f"[Qdrant] Lỗi kiểm tra collection: {e}. Recreating...")
-                try:
-                    client.delete_collection(collection_name=QDRANT_COLLECTION_NAME)
-                except Exception as e:
-                    logger.debug("[Qdrant] Khong the xoa collection cu: %s", e)
-                client.create_collection(
-                    collection_name=QDRANT_COLLECTION_NAME,
-                    vectors_config=VectorParams(
-                        size=QDRANT_VECTOR_SIZE,
-                        distance=Distance.COSINE,
-                    ),
-                )
-                logger.info(f"[Qdrant] Đã recreate collection sau lỗi: '{QDRANT_COLLECTION_NAME}'")
-
+            if self._has_dimension_mismatch():
+                logger.warning(f"[Qdrant] Collection dimension mismatch. Recreating...")
+                self._backup_and_recreate()
+            else:
+                logger.info(f"[Qdrant] Collection '{QDRANT_COLLECTION_NAME}' đã tồn tại và đúng dimension.")
     def embed_text(self, text: str) -> List[float]:
         """Chuyển đổi đoạn văn bản thành vector số học."""
         # e5-base yêu cầu prefix 'query: ' cho tìm kiếm
@@ -604,7 +584,7 @@ class HybridRAG:
                 graph_results = self.qdrant.get_chunks_by_ids(graph_chunk_ids[:top_k])
                 # Gán điểm ưu tiên cho kết quả từ đồ thị (entity-aware retrieval)
                 for r in graph_results:
-                    r["score"] = r.get("score", 0.85)
+                    r["score"] = r.get("score", GRAPH_RESULT_SCORE_BOOST)
                     r["source_method"] = "graph"
         except (ValueError, Exception) as e:
             # ValueError: NEO4J_URI trống. Exception: mất kết nối mạng/timeout.
