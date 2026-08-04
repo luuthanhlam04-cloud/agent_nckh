@@ -122,8 +122,7 @@ class SpotlightWindow(QWidget):
 
     Dependency Injection:
       process_fn   : Ham goi pipeline AI (tu main.py, da dong goi bang functools.partial)
-      intercept_fn : Ham Regex Interceptor (da partial(vault_path=...) tu main.py)
-                     -> Chi can goi intercept_fn(text, last_response=...)
+      intercept_fn : SemanticInterceptor.intercept (truc tiep, khong con vault_path partial)
     """
     sig_vad_stopped = pyqtSignal()  # Signal phai de o muc class
 
@@ -131,14 +130,12 @@ class SpotlightWindow(QWidget):
         self,
         process_fn:   Optional[Callable] = None,
         intercept_fn: Optional[Callable] = None,
-        vault_path:   str = "",
         parent=None,
     ):
         super().__init__(parent)
 
         self._process_fn    = process_fn
         self._intercept_fn  = intercept_fn
-        self._vault_path    = vault_path
         self._last_response = ""           # Luu cau tra loi cuoi de copy/toast/repeat
         self._ai_worker:  Optional[AIWorker]  = None
         self._tts_worker: Optional[TTSWorker] = None

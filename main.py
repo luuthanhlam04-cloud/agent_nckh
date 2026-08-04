@@ -16,6 +16,9 @@ Yeu cau he thong:
 
 import os
 import sys
+from dotenv import load_dotenv
+load_dotenv()  # Phải nạp .env TRƯỚC khi import các module khác
+
 from src.shared.settings import validate
 validate()
 import time
@@ -24,8 +27,6 @@ import logging
 import gc
 import functools
 from pathlib import Path
-
-from dotenv import load_dotenv
 
 # Fix loi Unicode khi in tieng Viet ra terminal (Windows)
 if sys.stdout.encoding != 'utf-8':
@@ -51,9 +52,6 @@ logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)  # Suppress mis
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
-
-# --- Tai bien moi truong ---
-load_dotenv()
 
 # --- Duong dan Obsidian Vault ---
 from src.shared.config import OBSIDIAN_VAULT_PATH
@@ -188,6 +186,12 @@ def _cleanup_components(components: dict):
         except Exception as e:
             logger.debug("[Cleanup] rag: %s", e)
 
+    if components.get("memory_store"):
+        try:
+            components["memory_store"].close()
+        except Exception as e:
+            logger.debug("[Cleanup] memory_store: %s", e)
+
     if components.get("consolidator"):
         try:
             components["consolidator"].stop_scheduler()
@@ -251,11 +255,17 @@ def main():
             # Khoi tao MemoryConsolidator
             from src.services.memory_consolidator import MemoryConsolidator
             from src.shared.config import GEMINI_API_KEY
-            gemini_api_key = GEMINI_API_KEY
+            from src.db.memory_store import SQLiteMemoryStore
+
+            # Tao SQLiteMemoryStore (luu tai AppData/Local/DigitalScholar/memory.db)
+            memory_store = SQLiteMemoryStore()
+            components["memory_store"] = memory_store
+
+            # Khoi tao MemoryConsolidator voi IMemoryStore thay vi vault_path
             consolidator = MemoryConsolidator(
-                memory=memory, 
-                vault_path=VAULT_PATH, 
-                gemini_api_key=gemini_api_key
+                memory=memory,
+                memory_store=memory_store,
+                gemini_api_key=GEMINI_API_KEY,
             )
             components["consolidator"] = consolidator
             consolidator.start_scheduler()
@@ -276,7 +286,8 @@ def main():
 
     try:
         from PyQt6.QtWidgets import QApplication
-        from src.ui.spotlight import SpotlightWindow, GlobalHotkeyWorker, setup_system_tray
+        from src.ui.spotlight import SpotlightWindow, GlobalHotkeyWorker
+        from src.ui.tray import setup_system_tray
         from src.core.semantic_interceptor import SemanticInterceptor
         # Tao Qt Application
         # setQuitOnLastWindowClosed(False): app song khi cua so dong (chay ngam qua tray)
@@ -308,16 +319,20 @@ def main():
             # Fallback chong loi khi khong co database
             embed_func = lambda x: [0.0] * 768
             
-        semantic_interceptor = SemanticInterceptor(embed_func=embed_func)
+        # SemanticInterceptor nhan memory_store (IMemoryStore) de luu ghi chu nhanh
+        memory_store = components.get("memory_store")
+        semantic_interceptor = SemanticInterceptor(
+            embed_func=embed_func,
+            memory_store=memory_store,
+        )
 
-        # Dong goi intercept_fn voi vault_path co san
-        intercept_fn = functools.partial(semantic_interceptor.intercept, vault_path=VAULT_PATH)
+        # intercept_fn: bo vault_path partial (khong con dung)
+        intercept_fn = semantic_interceptor.intercept
 
-        # Tao cua so Spotlight
+        # Tao cua so Spotlight (khong con truyen vault_path cho memory, chi cho watchdog)
         window = SpotlightWindow(
             process_fn=process_fn,
             intercept_fn=intercept_fn,
-            vault_path=VAULT_PATH,
         )
         components["window"] = window   # Luu de cleanup() goi khi SIGTERM
 
