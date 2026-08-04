@@ -45,7 +45,7 @@ SILENCE_DURATION_SEC  = 1.5    # Giay im lang de tu dong ngat mic (VAD mode)
 MIN_AUDIO_DURATION    = 1.5    # Giay toi thieu, ngay hon se bi bo qua
 RECORD_TIMEOUT_SEC    = 30     # Giay toi da ghi am (bao hiem)
 RMS_SPEECH_THRESHOLD  = 300    # Nguong RMS phan biet tieng noi vs tieng on
-GEMINI_STT_MODEL      = "gemini-3.1-flash-lite"
+GEMINI_STT_MODEL      = "gemini-3.5-flash-lite"
 
 # ── Singleton lock cho GeminiSTT ──────────────────────────────────────────────
 _gemini_stt_lock = threading.Lock()
@@ -227,7 +227,7 @@ class VoiceRecorder:
 
 class GeminiSTT:
     """
-    STT su dung Gemini API (gemini-3.1-flash-lite, audio inline).
+    STT su dung Gemini API (gemini-3.5-flash-lite, audio inline).
 
     Uu diem so voi Whisper local:
       - Cold start = 0s (khong load model, khong subprocess)
@@ -338,3 +338,177 @@ class GeminiSTT:
             # Bat buoc goi gc.collect() de giai phong bo nho
             # (yeu cau boi production_check.py Singleton & GC Enforcer Rule)
             gc.collect()
+
+
+# ==============================================================================
+#  GeminiLiveSTT — STT dung Gemini Live API (Streaming-first, implements ISTTProvider)
+# ==============================================================================
+
+GEMINI_LIVE_MODEL = "gemini-live-2.5-flash-preview"
+
+class GeminiLiveSTT:
+    """
+    STT su dung Gemini Live API (bidirectional audio streaming).
+
+    Implements ISTTProvider interface (streaming-first design):
+      start()          -> khoi tao session va buffer am thanh
+      push(chunk)      -> buffer PCM chunk (chay trong VoiceRecorder thread)
+      stop()           -> ket thuc ghi am
+      get_transcript() -> gui toan bo audio len Gemini Live, cho ket qua
+
+    So sanh voi GeminiSTT (batch):
+      GeminiSTT      : record all -> send 1 WAV -> receive text  (~1-2s latency)
+      GeminiLiveSTT  : stream chunks -> receive partial text     (~0.3-0.8s latency)
+
+    Thiet ke hien tai (v1):
+      - Buffer am thanh trong push(), gui 1 lan trong get_transcript()
+        bang google.genai.live AsyncSession.
+      - Chay trong asyncio event loop rieng (khong xung dot voi Qt event loop).
+      - Thread-safe: push() co the goi tu thread ghi am, get_transcript()
+        goi tu VoiceWorker thread.
+
+    Upgrade path (v2):
+      - Streaming real-time: gui chunk trong push() va nhan partial transcript
+        qua asyncio callback -> giam latency xuong duoi 500ms.
+    """
+
+    def __init__(self):
+        self._chunks: list[bytes] = []
+        self._lock   = threading.Lock()
+        self._client = None
+        logger.info("[GeminiLiveSTT] Khoi tao (Gemini Live API).")
+
+    # ── Private ──────────────────────────────────────────────────────────────
+
+    def _get_client(self):
+        """Lazy-init Gemini client (tai su dung ket noi)."""
+        if self._client is None:
+            import google.genai as genai
+            from src.shared.config import GEMINI_API_KEY
+            if not GEMINI_API_KEY:
+                raise ValueError("[GeminiLiveSTT] GEMINI_API_KEY chua duoc cau hinh trong .env")
+            self._client = genai.Client(api_key=GEMINI_API_KEY)
+            logger.info("[GeminiLiveSTT] Gemini Client san sang.")
+        return self._client
+
+    @staticmethod
+    def _chunks_to_wav(chunks: list[bytes]) -> bytes:
+        """Ghep cac PCM chunk va wrap thanh WAV container trong bo nho."""
+        pcm_data = b"".join(chunks)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(AUDIO_CHANNELS)
+            wf.setsampwidth(AUDIO_FORMAT_WIDTH)
+            wf.setframerate(AUDIO_SAMPLE_RATE)
+            wf.writeframes(pcm_data)
+        return buf.getvalue()
+
+    async def _transcribe_async(self, wav_bytes: bytes) -> str:
+        """
+        Gui WAV bytes qua Gemini Live Session va nhan transcript.
+        Chay trong asyncio event loop rieng de khong block Qt.
+        """
+        import google.genai as genai
+        from google.genai import types as genai_types
+
+        client = self._get_client()
+
+        # Cau hinh Live Session chi de STT (khong TTS, khong tool)
+        config = genai_types.LiveConnectConfig(
+            response_modalities=["TEXT"],
+            system_instruction=(
+                "Ban la he thong nhan dang giong noi tieng Viet chinh xac. "
+                "Chi tra ve van ban thuan tu doan audio, khong them giai thich, "
+                "khong markdown, khong dau ngoac kep. "
+                "Neu khong co giong noi hoac am thanh qua ngan, tra ve chuoi rong."
+            ),
+        )
+
+        transcript = ""
+        try:
+            async with client.aio.live.connect(
+                model=GEMINI_LIVE_MODEL,
+                config=config,
+            ) as session:
+                # Gui audio WAV blob
+                await session.send(
+                    input=genai_types.Part.from_bytes(
+                        data=wav_bytes,
+                        mime_type="audio/wav",
+                    ),
+                    end_of_turn=True,  # Bao hieu ket thuc luot noi
+                )
+
+                # Nhan toan bo response
+                async for response in session.receive():
+                    if response.text:
+                        transcript += response.text
+
+        except Exception as e:
+            logger.error("[GeminiLiveSTT] Loi Live session: %s", e, exc_info=True)
+            raise
+
+        return transcript.strip()
+
+    # ── ISTTProvider Implementation ───────────────────────────────────────────
+
+    def start(self) -> None:
+        """Khoi tao session: reset buffer am thanh."""
+        with self._lock:
+            self._chunks = []
+        logger.info("[GeminiLiveSTT] Session bat dau, buffer da reset.")
+
+    def push(self, chunk: bytes) -> None:
+        """
+        Buffer mot PCM chunk.
+        Goi tu VoiceRecorder._record_loop() (daemon thread).
+        """
+        with self._lock:
+            self._chunks.append(chunk)
+
+    def stop(self) -> None:
+        """Ket thuc ghi am (buffer giu nguyen cho get_transcript())."""
+        logger.info("[GeminiLiveSTT] Ket thuc ghi am. %d chunks da buffer.", len(self._chunks))
+
+    def get_transcript(self) -> str:
+        """
+        Gui toan bo audio len Gemini Live va tra ve transcript.
+        Blocking. Goi tu VoiceWorker (QThread), KHONG goi tren Main Thread.
+        """
+        with self._lock:
+            chunks_copy = list(self._chunks)
+
+        if not chunks_copy:
+            logger.warning("[GeminiLiveSTT] Khong co audio de gui.")
+            return ""
+
+        # Kiem tra do dai toi thieu
+        total_frames = sum(len(c) for c in chunks_copy) // AUDIO_FORMAT_WIDTH
+        min_frames   = int(MIN_AUDIO_DURATION * AUDIO_SAMPLE_RATE)
+        if total_frames < min_frames:
+            logger.info("[GeminiLiveSTT] Audio qua ngan (%d frames < %d min). Bo qua.", total_frames, min_frames)
+            return ""
+
+        start_t  = time.time()
+        wav_data = self._chunks_to_wav(chunks_copy)
+        logger.info("[GeminiLiveSTT] Dang gui %.1f giay audio (%d bytes WAV)...",
+                    total_frames / AUDIO_SAMPLE_RATE, len(wav_data))
+
+        try:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                transcript = loop.run_until_complete(self._transcribe_async(wav_data))
+            finally:
+                loop.close()
+
+            elapsed = time.time() - start_t
+            logger.info("[GeminiLiveSTT] Ket qua (%.2fs): '%s'", elapsed, transcript[:100])
+            return transcript
+
+        except Exception as e:
+            logger.error("[GeminiLiveSTT] Loi get_transcript: %s", e, exc_info=True)
+            return f"Loi: {str(e)[:100]}"
+        finally:
+            gc.collect()
+

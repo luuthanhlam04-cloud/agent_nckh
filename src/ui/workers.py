@@ -3,13 +3,27 @@ import os
 import json
 import logging
 import asyncio
+import tempfile
 from typing import Any, Callable, Dict, List, Optional
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer, QUrl
 
 import keyboard
 
 from src.core.coordinator import RequestCoordinator
-from src.ui.voice_engine import VoiceRecorder, GeminiSTT
+
+logger = logging.getLogger("Workers")
+
+GLOBAL_HOTKEY = "ctrl+space"
+VOICE_HOTKEY = "ctrl+shift+space"
+TTS_MAX_CHARS = 800
+TTS_VOICE = "vi-VN-NamMinhNeural"
+
+try:
+    import edge_tts as _edge_tts_mod
+    _EDGE_TTS_AVAILABLE = True
+except ImportError:
+    _EDGE_TTS_AVAILABLE = False
+
 
 
 class AIWorker(QThread):
@@ -178,7 +192,7 @@ class TTSWorker(QThread):
 
 class VoiceWorker(QThread):
     """
-    Worker thuc hien STT bang Gemini Cloud API (gemini-3.1-flash-lite).
+    Worker thuc hien STT bang Gemini Cloud API (gemini-3.5-flash-lite).
     Nhan raw PCM bytes tu VoiceRecorder, khong can file tam tren disk.
     Tranh block giao dien bang cach chay trong Worker Thread rieng biet.
     """
@@ -190,17 +204,32 @@ class VoiceWorker(QThread):
 
     def run(self) -> None:
         try:
-            from src.ui.voice_engine import GeminiSTT
-            stt = GeminiSTT()
+            from src.ui.voice_engine import GeminiLiveSTT, GeminiSTT
             import time
+
             t0 = time.perf_counter()
-            text = stt.transcribe(self._audio_bytes)
+
+            # Dung GeminiLiveSTT (ISTTProvider streaming-first)
+            live_stt = GeminiLiveSTT()
+            live_stt.start()
+            live_stt.push(self._audio_bytes)  # PCM bytes da buffer san tu VoiceRecorder
+            live_stt.stop()
+            text = live_stt.get_transcript()
+
             stt_ms = (time.perf_counter() - t0) * 1000
-            logger.info(f"[Metrics] STT=%.0fms", stt_ms)
+            logger.info("[Metrics] GeminiLive STT=%.0fms", stt_ms)
+
+            # Fallback sang GeminiSTT batch neu Live tra ve rong
+            if not text:
+                logger.warning("[VoiceWorker] GeminiLive tra ve rong, thu GeminiSTT batch...")
+                batch_stt = GeminiSTT()
+                text = batch_stt.transcribe(self._audio_bytes)
+
             try:
-                self.sig_finished.emit(text if text else "Lỗi: Gemini trả về kết quả trống.")
+                self.sig_finished.emit(text if text else "Lỗi: STT trả về kết quả trống.")
             except RuntimeError:
                 pass
+
         except ImportError as e:
             logger.error("[VoiceWorker] Thieu thu vien voice_engine: %s", e, exc_info=True)
             try:
