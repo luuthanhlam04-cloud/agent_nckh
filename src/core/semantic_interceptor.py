@@ -1,8 +1,12 @@
 """
 semantic_interceptor.py - Bộ Giáp Ngữ Nghĩa (Semantic Interceptor)
 ===================================================================
-Sử dụng mô hình e5-base (768 chiều) để phân loại ý định người dùng bằng Semantic Similarity.
+Sử dụng embedding model để phân loại ý định người dùng bằng Semantic Similarity.
 Giải quyết triệt để lỗi False Negative của Regex cũ.
+
+Refactored (SQLite Memory):
+  - Xóa vault_path dependency hoàn toàn.
+  - Inject IMemoryStore để lưu ghi chú nhanh (MEMORY_SAVE intent).
 """
 
 import os
@@ -19,10 +23,11 @@ import urllib.request
 from datetime import datetime
 from typing import Optional, Tuple, Any, Callable, List
 
+from src.core.interfaces import IMemoryStore
+
 logger = logging.getLogger("SemanticInterceptor")
 
-OBSIDIAN_MEMORY_FILE = os.path.join("03_Agent_Memory", "Profile.md")
-THRESHOLD = 0.87  # Ngưỡng Cosine Similarity để quyết định (Tuned for False Positives vs False Negatives)
+THRESHOLD = 0.87  # Ngưỡng Cosine Similarity để quyết định
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TẬP NEO NGỮ NGHĨA (ANCHORS)
@@ -41,12 +46,21 @@ def cosine_similarity(v1: List[float], v2: List[float]) -> float:
 
 
 class SemanticInterceptor:
-    def __init__(self, embed_func: Callable[[str], List[float]]):
+    def __init__(
+        self,
+        embed_func: Callable[[str], List[float]],
+        memory_store: Optional[IMemoryStore] = None,
+    ):
         """
-        Khởi tạo Semantic Interceptor, nhận hàm nhúng vector từ QdrantManager
-        để tái sử dụng e5-base, tránh tràn RAM.
+        Khởi tạo Semantic Interceptor.
+
+        Args:
+            embed_func   : Hàm nhúng vector (tái dùng từ QdrantManager, tránh tràn RAM).
+            memory_store : IMemoryStore để lưu ghi chú nhanh (MEMORY_SAVE intent).
+                           None = fallback log warning.
         """
-        self.embed_func = embed_func
+        self.embed_func   = embed_func
+        self._memory_store = memory_store
         self._anchor_vectors: List[Tuple[str, List[float]]] = []
         self._is_ready = False
         
@@ -101,39 +115,40 @@ class SemanticInterceptor:
                     
         return False
 
-    def intercept(self, user_input: str, vault_path: str = "", last_response: str = "") -> Tuple[Optional[Any], Optional[str]]:
+    def intercept(self, user_input: str, last_response: str = "") -> Tuple[Optional[Any], Optional[str]]:
         text = user_input.strip()
         if not text or not self._is_ready:
             return None, None
-            
+
         if self._filter_whisper_hallucination(text):
             return None, None
 
         # 1. Tính toán Vector cho User Input
-        user_vec = np.array(self.embed_func(text))
+        user_vec  = np.array(self.embed_func(text))
         user_norm = np.linalg.norm(user_vec)
         if user_norm > 0:
             user_vec = user_vec / user_norm
-        
+
         # 2. So khớp với tập Anchors (Tìm max Cosine Similarity dùng ma trận)
         if hasattr(self, '_anchor_matrix'):
-            scores = self._anchor_matrix @ user_vec
-            best_idx = np.argmax(scores)
+            scores     = self._anchor_matrix @ user_vec
+            best_idx   = np.argmax(scores)
             best_score = float(scores[best_idx])
             best_intent = self._anchor_vectors[best_idx][0]
         else:
             best_intent = None
-            best_score = -1.0
+            best_score  = -1.0
 
-        # [Tuning Feature] In ra màn hình để sếp dễ vặn núm THRESHOLD
-        logger.info(f"[Semantic Tuning] '{text[:50]}' -> Intent: {best_intent} | Điểm Cosine: {best_score:.4f} | Threshold: {THRESHOLD}")
+        logger.info(
+            "[Semantic Tuning] '%s' -> Intent: %s | Score: %.4f | Threshold: %s",
+            text[:50], best_intent, best_score, THRESHOLD
+        )
 
         # 3. Ra quyết định dựa trên Threshold
         if best_score < THRESHOLD:
-            # Fallback mặc định là research_query
             return {"intent": "research_query", "query": text}, "router"
-            
-        return self._execute_intent(best_intent, text, vault_path, last_response)
+
+        return self._execute_intent(best_intent, text, last_response)
 
     def _extract_payload(self, text: str, start_words: List[str]) -> str:
         """Hàm rút gọn payload thông minh dùng Regex để cắt từ khóa ở ĐẦU câu."""
@@ -149,7 +164,7 @@ class SemanticInterceptor:
         """Loại bỏ ký tự đặc biệt nguy hiểm để chống Command Injection."""
         return re.sub(r'[^a-zA-Z0-9\s-]', '', cmd).strip()
 
-    def _execute_intent(self, intent: str, text: str, vault_path: str, last_response: str) -> Tuple[Optional[Any], Optional[str]]:
+    def _execute_intent(self, intent: str, text: str, last_response: str) -> Tuple[Optional[Any], Optional[str]]:
         now = datetime.now()
         weekday = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"][now.weekday()]
 
@@ -199,24 +214,24 @@ class SemanticInterceptor:
             return "Đã mở File Explorer.", "ninja"
 
         elif intent == "OBSIDIAN_SAVE":
-            if not vault_path: return "Lỗi: Không tìm thấy đường dẫn Vault.", "ninja"
-            
             # Xử lý trường hợp sếp bảo "lưu câu bạn vừa nói"
             if "bạn vừa nói" in text.lower() or "thông tin vừa rồi" in text.lower() or "câu vừa rồi" in text.lower():
                 payload = last_response if last_response else "Không có câu trả lời nào trước đó để lưu."
             else:
                 payload = self._extract_payload(text, ["lưu vào ghi chú", "nhớ nội dung này", "ghi vào sổ tay", "lưu thông tin", "ghi nhớ", "lưu", "nhớ"])
-                if not payload: payload = text
-            
-            memory_file = os.path.join(vault_path, OBSIDIAN_MEMORY_FILE)
-            try:
-                os.makedirs(os.path.dirname(memory_file), exist_ok=True)
-                ts = now.strftime("%d/%m/%Y %H:%M")
-                with open(memory_file, "a", encoding="utf-8") as f:
-                    f.write(f"\n- [{ts}]: {payload}")
-                return f"Đã ghi nhớ vào Obsidian: {payload}", "ninja"
-            except Exception as e:
-                return f"Lỗi ghi Obsidian: {e}", "ninja"
+                if not payload:
+                    payload = text
+
+            if self._memory_store:
+                try:
+                    self._memory_store.save_quick_note(payload)
+                    return f"Đã ghi nhớ: {payload[:80]}", "ninja"
+                except Exception as e:
+                    logger.error("[Interceptor] Lỗi lưu ghi chú vào SQLite: %s", e)
+                    return f"Lỗi lưu ghi chú: {e}", "ninja"
+            else:
+                logger.warning("[Interceptor] memory_store chưa được inject. Bỏ qua MEMORY_SAVE.")
+                return "Hệ thống chưa sẵn sàng lưu ghi chú.", "ninja"
 
         elif intent == "FORCE_WEB":
             payload = self._extract_payload(text, ["hãy", "tìm trên mạng", "tra google", "bỏ qua rag", "tra cứu", "internet", "thử xem", "tìm kiếm"])
