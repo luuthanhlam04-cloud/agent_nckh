@@ -1,0 +1,20 @@
+# Digital Scholar - RAG Configuration
+
+dev_mode: true
+
+embedding:
+  provider: gemini
+  # Other options: e5
+
+reranker:
+  enabled: true
+  provider: voyage
+  # Other options: gemini, none
+
+retrieval:
+  wide_factor: 4      # Lấy top_k * wide_factor từ Qdrant
+  top_k: 5            # Số lượng chunk trả về cho LLM sau rerank
+
+context:
+  max_chunk_tokens: 20000
+  prompt_version: v1
