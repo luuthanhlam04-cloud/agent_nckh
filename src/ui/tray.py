@@ -1,10 +1,17 @@
 # -*- coding: utf-8 -*-
-from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
-from PyQt6.QtGui import QIcon, QAction
+import logging
+from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
+from PyQt6.QtGui import QIcon, QAction, QPixmap, QColor
 from PyQt6.QtCore import QCoreApplication
 import os
+from typing import TYPE_CHECKING
 
-def setup_system_tray(app: QApplication, window: SpotlightWindow) -> QSystemTrayIcon:
+if TYPE_CHECKING:
+    from src.ui.spotlight import SpotlightWindow
+
+logger = logging.getLogger("Tray")
+
+def setup_system_tray(app: QApplication, window: 'SpotlightWindow') -> QSystemTrayIcon:
     """
     Tao icon he thong (System Tray) o goc dong ho Windows.
     Right-click -> menu: Mo / Thoat.

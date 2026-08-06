@@ -153,10 +153,12 @@ class SpotlightWindow(QWidget):
         self.sig_vad_stopped.connect(self._on_vad_stop)
 
         try:
-            from src.ui.voice_engine import GeminiSTT, VoiceRecorder  # noqa: F401 (GeminiSTT lazy-init)
+            from src.ui.voice_engine import GeminiSTT, VoiceRecorder, GeminiLiveSTT  # noqa
             self._voice_recorder = VoiceRecorder(on_silence_detected=lambda: self.sig_vad_stopped.emit())
+            self._live_stt: Optional[GeminiLiveSTT] = None   # Sprint 3: instance dung chung cho session
         except ImportError:
             self._voice_recorder = None
+            self._live_stt = None
             logger.warning("[SpotlightWindow] Khong the nap VoiceRecorder (thieu pyaudio).")
 
         self._setup_window()
@@ -166,6 +168,25 @@ class SpotlightWindow(QWidget):
         self._setup_tts_player()
         # GeminiSTT khoi tao lazy khi lan dau tien ghi am -> khong can check server o day
         logger.info("[SpotlightWindow] GeminiSTT san sang theo Lazy Init.")
+
+        # Sprint 3: Prewarm Gemini Live Client (TLS handshake) ngay khi app mo
+        # Chay trong daemon thread -> khong block Qt main thread
+        import threading
+        threading.Thread(
+            target=self._prewarm_voice_client, daemon=True, name="PrewarmGeminiClient"
+        ).start()
+
+    @staticmethod
+    def _prewarm_voice_client() -> None:
+        """Warm Singleton Client ngay khi app khoi dong (daemon thread)."""
+        try:
+            from src.ui.voice_engine import prewarm_client
+            prewarm_client()
+        except Exception as e:
+            # Log nhung khong crash — prewarm la optional
+            import logging
+            logging.getLogger("VoiceEngine").warning("[prewarm] Khong warm duoc: %s", e)
+
 
     # ── Khoi tao ─────────────────────────────────────────────────────────────
 
@@ -744,27 +765,48 @@ class SpotlightWindow(QWidget):
     # ── [S2-PTT] Push-to-Talk handlers ──────────────────────────────────────
 
     def _on_ptt_start(self):
-        """[S2-PTT] Bat dau ghi am ngay khi nhan tin hieu giu phim.
-        Khac voi VAD mode: khong can greeting, mo mic luon, nhanh hon.
+        """[Sprint 3-PTT] Bat dau ghi am va mo Gemini Live session song song.
+        GeminiLiveSTT.start_streaming() duoc goi TRUOC khi mic bat:
+        -> audio chunk dau tien duoc gui ngay, khong doi buffer.
         """
-        # Guard: Neu dang busy hoac dang recording thi bo qua
         if self._is_recording or self._is_busy():
             return
-
-        # Guard: Kiem tra pyaudio san sang
         if not self._voice_recorder:
             return
 
-        # Bat mic luon, khong can ping server (GeminiSTT lazy init)
         self._is_recording = True
         self.show_and_focus()
         self.input_box.setEnabled(False)
         self.input_box.setPlaceholderText("  🔴 Đang nghe... (Nhả Alt để gửi)")
+
+        # Sprint 3: Khoi tao live_stt va mo session TRUOC khi mic bat
+        try:
+            from src.ui.voice_engine import GeminiLiveSTT, CancelToken
+            self._live_stt = GeminiLiveSTT()
+
+            # Speculative Retrieval: khi partial du, warm-up retriever
+            self._live_stt.set_on_partial(self._on_speculative_partial)
+
+            # Lay cancel_token truoc de PTT stop co the cancel
+            self._ptt_cancel_token = CancelToken()
+
+            # Mo session streaming (non-blocking, chay trong thread rieng)
+            self._live_stt.start_streaming(cancel_token=self._ptt_cancel_token)
+
+            # Bat micro voi on_chunk callback -> moi 30ms push ngay len Gemini
+            self._voice_recorder._on_chunk = self._live_stt.push
+            logger.info("[SpotlightWindow] [PTT] Live session da mo, bat dau ghi am streaming.")
+        except Exception as e:
+            logger.warning("[SpotlightWindow] [PTT] Khong the mo Live session (%s), fallback batch mode.", e)
+            self._live_stt = None
+            self._ptt_cancel_token = None
+            self._voice_recorder._on_chunk = None
+
         self._voice_recorder.start_recording()
         logger.info("[SpotlightWindow] [PTT] Bat dau ghi am.")
 
     def _on_ptt_stop(self):
-        """[PTT] Dung ghi am va gui Gemini STT khi nhan tin hieu tha phim."""
+        """[Sprint 3-PTT] Dung ghi am va gui ket qua Gemini STT."""
         if not self._is_recording:
             return
 
@@ -773,21 +815,32 @@ class SpotlightWindow(QWidget):
         self.input_box.setEnabled(False)
 
         audio_bytes = self._voice_recorder.stop_recording()
-        if audio_bytes:
-            self.status_label.setText("   Đang giải mã giọng nói (Gemini STT)...")
+
+        # Trong streaming mode, live_stt da nhan chunk real-time
+        # stop() gui sentinel -> Gemini biet la het luot noi
+        if self._live_stt:
+            self._live_stt.stop()
+
+        if audio_bytes or self._live_stt:
+            self.status_label.setText("   Đang giải mã giọng nói (Gemini Live)...")
             self.status_label.show()
             self._expand_window()
 
-            self._voice_worker = VoiceWorker(audio_bytes=audio_bytes, parent=self)
+            self._voice_worker = VoiceWorker(
+                audio_bytes=audio_bytes or b"",
+                parent=self,
+                live_stt=self._live_stt,   # Sprint 3: inject live_stt
+            )
+            if hasattr(self, '_ptt_cancel_token') and self._ptt_cancel_token:
+                self._voice_worker._cancel_token = self._ptt_cancel_token
             self._voice_worker.sig_finished.connect(self._on_voice_finished)
-            
-            # [CRASH-FIX] Dọn dẹp an toàn bằng signal 'finished'
             self._voice_worker.finished.connect(lambda: setattr(self, '_voice_worker', None))
             self._voice_worker.finished.connect(self._voice_worker.deleteLater)
+            self._voice_worker.finished.connect(lambda: setattr(self, '_live_stt', None))
             self._voice_worker.start()
-            logger.info("[SpotlightWindow] [PTT] Tha phim, bat dau giai ma Gemini STT.")
+            logger.info("[SpotlightWindow] [PTT] Tha phim, bat dau giai ma Gemini Live.")
         else:
-            # Audio qua ngan (tieng on, tap am) -> thong bao nhe
+            self._live_stt = None
             self.input_box.setEnabled(True)
             self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
             logger.info("[SpotlightWindow] [PTT] Audio qua ngan, bo qua.")
@@ -820,21 +873,30 @@ class SpotlightWindow(QWidget):
             self._is_recording = False
             self.input_box.setPlaceholderText("  Đang giải mã giọng nói...")
             self.input_box.setEnabled(False)
-            
+
             audio_bytes = self._voice_recorder.stop_recording()
-            if audio_bytes:
-                self.status_label.setText("   Đang giải mã giọng nói (Gemini STT)...")
+
+            # Sprint 3: gui sentinel cho live session neu dang streaming
+            if self._live_stt:
+                self._live_stt.stop()
+
+            if audio_bytes or self._live_stt:
+                self.status_label.setText("   Đang giải mã giọng nói (Gemini Live)...")
                 self.status_label.show()
                 self._expand_window()
-                
-                self._voice_worker = VoiceWorker(audio_bytes=audio_bytes, parent=self)
+
+                self._voice_worker = VoiceWorker(
+                    audio_bytes=audio_bytes or b"",
+                    parent=self,
+                    live_stt=self._live_stt,
+                )
                 self._voice_worker.sig_finished.connect(self._on_voice_finished)
-                
-                # [CRASH-FIX] Dọn dẹp an toàn bằng signal 'finished'
                 self._voice_worker.finished.connect(lambda: setattr(self, '_voice_worker', None))
                 self._voice_worker.finished.connect(self._voice_worker.deleteLater)
+                self._voice_worker.finished.connect(lambda: setattr(self, '_live_stt', None))
                 self._voice_worker.start()
             else:
+                self._live_stt = None
                 self.input_box.setEnabled(True)
                 self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
                 self._show_result("Lỗi: Không nhận được dữ liệu âm thanh.")
@@ -871,42 +933,82 @@ class SpotlightWindow(QWidget):
                 self.show_and_focus()
                 self._play_greeting(for_voice=True)
 
+    def _on_speculative_partial(self, partial_text: str):
+        """
+        [Sprint 3 - Speculative Retrieval]
+        Goi boi GeminiLiveSTT._receiver() khi partial transcript dat nguong ~20 ky tu.
+        Chay trong asyncio thread (KHONG phai Main Thread) -> KHONG duoc goi Qt UI.
+
+        Muc tieu: bat dau warm-up RAG retriever som de giam latency tong the.
+        Khi final transcript den, retriever co the da xong pre-fetch.
+        """
+        logger.info("[SpotlightWindow] [Speculative] Partial: '%s'", partial_text[:60])
+        try:
+            from src.core.orchestrator import Orchestrator
+            orch = Orchestrator()   # Singleton — khong tao moi
+            rag  = getattr(orch, '_rag', None)
+            if rag is None:
+                return
+            # Chay non-blocking pre-fetch (ket qua bi bo qua, muc tieu la warm cache)
+            import threading
+            def _prefetch():
+                try:
+                    rag.retrieve_context(query=partial_text, top_k=3)
+                    logger.info("[SpotlightWindow] [Speculative] Pre-fetch xong.")
+                except Exception as ex:
+                    logger.debug("[SpotlightWindow] [Speculative] Pre-fetch error: %s", ex)
+
+            threading.Thread(
+                target=_prefetch, daemon=True, name="SpeculativeRetriever"
+            ).start()
+        except Exception as e:
+            logger.debug("[SpotlightWindow] [Speculative] Khong kha dung: %s", e)
+
+
     def _on_voice_finished(self, text: str):
         """Nhan ket qua tu GeminiSTT va tu dong gui lenh."""
         self.status_label.hide()
         self.input_box.setEnabled(True)
         self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
         self.input_box.setFocus()
-        # [FIX] Dam bao reset trang thai recording sau moi ket qua
         self._is_recording = False
-        
-        # [BUG-FIX] Kiem tra tat ca dinh dang loi tu VoiceEngine
+
+        # Sprint 2: rong = bi huy (ESC) -> reset UI, khong show loi
+        if not text:
+            logger.info("[SpotlightWindow] STT bi huy hoac tra ve rong.")
+            return
+
+        # Kiem tra loi tu VoiceEngine
         if text.lower().startswith("lỗi") or text.lower().startswith("loi"):
             self._show_result(text)
-        elif text:
-            # [B15-FIX] Strip whitespace va ky tu dac biet, kiem tra do dai toi thieu
-            # Whisper doi khi tra ve chi dau cham hoac khoang trang
-            cleaned_text = text.strip().strip('.,!?;:-')
-            if len(cleaned_text) > 2:
-                self.input_box.setText(cleaned_text)
-                # [FIX-BUG3] Tat moi am thanh hien tai de _is_busy() khong false-positive 
-                # va chan cau lenh tiep theo bi submit
-                self._on_input_text_changed()
-                # [FIX-BUG2] Giai phong co ban TRUOC khi goi _on_submit de pass qua luong _is_busy()
-                self._voice_worker = None
-                self._on_submit()  # Gui ngay vao luong chat
-            else:
-                self._show_result("Không nghe rõ bạn nói gì. Vui lòng thử lại.")
+            return
+
+        # Co transcript hop le
+        cleaned_text = text.strip().strip('.,!?;:-')
+        if len(cleaned_text) > 2:
+            self.input_box.setText(cleaned_text)
+            self._on_input_text_changed()
+            self._voice_worker = None
+            self._on_submit()
         else:
             self._show_result("Không nghe rõ bạn nói gì. Vui lòng thử lại.")
         # NOTE: _voice_worker se tu dong set ve None qua lambda signal o tren
 
+
     def keyPressEvent(self, event):
-        """Escape de an cua so."""
+        """Escape: huy STT dang chay (neu co) hoac an cua so."""
         if event.key() == Qt.Key.Key_Escape:
+            # Sprint 2: Huy VoiceWorker truoc khi an cua so
+            if self._voice_worker and self._voice_worker.isRunning():
+                logger.info("[SpotlightWindow] ESC: huy VoiceWorker dang chay.")
+                self._voice_worker.cancel()
+                self.input_box.setEnabled(True)
+                self.input_box.setPlaceholderText("  Hỏi Digital Scholar...")
+                self._is_recording = False
             self.hide()
         else:
             super().keyPressEvent(event)
+
 
     def closeEvent(self, event):
         """Click X -> an chu khong thoat (chay ngam qua System Tray)."""

@@ -192,56 +192,76 @@ class TTSWorker(QThread):
 
 class VoiceWorker(QThread):
     """
-    Worker thuc hien STT bang Gemini Cloud API (gemini-3.5-flash-lite).
-    Nhan raw PCM bytes tu VoiceRecorder, khong can file tam tren disk.
-    Tranh block giao dien bang cach chay trong Worker Thread rieng biet.
+    Worker thuc hien STT bang Gemini Live API (Sprint 1+2).
+    - Sprint 1: Singleton Client, Timeout, Selective Retry, Metrics.
+    - Sprint 2: CancelToken -> ESC huy request giua chung.
+    - Sprint 3 (coming): nhan live_stt da stream san tu ben ngoai.
     """
-    sig_finished = pyqtSignal(str)   # Phat text giai ma ve Main Thread
+    sig_finished = pyqtSignal(str)   # text tra ve Main Thread
 
-    def __init__(self, audio_bytes: bytes, parent=None):
+    def __init__(self, audio_bytes: bytes, parent=None,
+                 live_stt=None):  # Sprint 3: live_stt co the inject tu ben ngoai
         super().__init__(parent)
         self._audio_bytes = audio_bytes
+        self._live_stt    = live_stt   # None = tu tao, khong None = streaming mode
+        from src.ui.voice_engine import CancelToken
+        self._cancel_token = CancelToken()
+
+    def cancel(self) -> None:
+        """
+        Huy STT request dang chay. An toan khi goi tu Main Thread.
+        GeminiLiveSTT.get_transcript() se kiem tra token va dung ngay.
+        """
+        logger.info("[VoiceWorker] cancel() duoc goi.")
+        self._cancel_token.cancel()
 
     def run(self) -> None:
         try:
             from src.ui.voice_engine import GeminiLiveSTT, GeminiSTT
+            from src.ui.voice_errors import VoiceCancelledError
             import time
 
             t0 = time.perf_counter()
 
-            # Dung GeminiLiveSTT (ISTTProvider streaming-first)
-            live_stt = GeminiLiveSTT()
-            live_stt.start()
-            live_stt.push(self._audio_bytes)  # PCM bytes da buffer san tu VoiceRecorder
-            live_stt.stop()
-            text = live_stt.get_transcript()
+            # Lay live_stt inject tu ben ngoai (Sprint 3) hoac tu tao (Sprint 1/2)
+            live_stt = self._live_stt or GeminiLiveSTT()
+            if not self._live_stt:
+                # Batch mode: push toan bo audio roi moi gui
+                live_stt.start()
+                live_stt.push(self._audio_bytes)
+                live_stt.stop()
 
-            stt_ms = (time.perf_counter() - t0) * 1000
-            logger.info("[Metrics] GeminiLive STT=%.0fms", stt_ms)
+            # Tra transcript (co timeout + selective retry + cancel_token)
+            text = live_stt.get_transcript(cancel_token=self._cancel_token)
 
             # Fallback sang GeminiSTT batch neu Live tra ve rong
-            if not text:
-                logger.warning("[VoiceWorker] GeminiLive tra ve rong, thu GeminiSTT batch...")
-                batch_stt = GeminiSTT()
-                text = batch_stt.transcribe(self._audio_bytes)
+            if not text and not self._cancel_token.is_cancelled():
+                logger.warning("[VoiceWorker] Live STT tra ve rong, fallback GeminiSTT batch...")
+                text = GeminiSTT().transcribe(self._audio_bytes)
+
+            total_ms = (time.perf_counter() - t0) * 1000
+            logger.info("[Metrics] VoiceWorker total: %.0fms", total_ms)
 
             try:
                 self.sig_finished.emit(text if text else "Lỗi: STT trả về kết quả trống.")
             except RuntimeError:
                 pass
 
-        except ImportError as e:
-            logger.error("[VoiceWorker] Thieu thu vien voice_engine: %s", e, exc_info=True)
-            try:
-                self.sig_finished.emit("Lỗi: Không tìm thấy engine STT.")
-            except RuntimeError:
-                pass
         except Exception as e:
-            logger.error("[VoiceWorker] Loi: %s", e, exc_info=True)
-            try:
-                self.sig_finished.emit(f"Lỗi giải mã: {str(e)[:80]}")
-            except RuntimeError:
-                pass
+            from src.ui.voice_errors import VoiceCancelledError
+            if isinstance(e, VoiceCancelledError):
+                logger.info("[VoiceWorker] Request bi huy boi user.")
+                try:
+                    self.sig_finished.emit("")   # emit rong -> spotlight biet bi huy, khong show loi
+                except RuntimeError:
+                    pass
+            else:
+                logger.error("[VoiceWorker] Loi: %s", e, exc_info=True)
+                try:
+                    self.sig_finished.emit(f"Lỗi giải mã: {str(e)[:80]}")
+                except RuntimeError:
+                    pass
+
 
 
 # ==============================================================================

@@ -63,6 +63,20 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 """
 
+_DDL_RETRIEVAL_LOG = """
+CREATE TABLE IF NOT EXISTS retrieval_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    query           TEXT    NOT NULL,
+    embedding_model TEXT,
+    reranker        TEXT,
+    policy          TEXT,
+    collection      TEXT,
+    chunks_json     TEXT,
+    latency_ms      REAL,
+    created_at      TEXT    NOT NULL
+);
+"""
+
 # ── Helper: xác định đường dẫn DB ────────────────────────────────────────────
 
 def _get_default_db_path() -> Path:
@@ -128,7 +142,7 @@ class SQLiteMemoryStore(IMemoryStore):
         with self._lock:
             cur = self._conn.cursor()
             cur.executescript(
-                _DDL_DAILY_SUMMARIES + _DDL_QUICK_NOTES + _DDL_MEMORIES
+                _DDL_DAILY_SUMMARIES + _DDL_QUICK_NOTES + _DDL_MEMORIES + _DDL_RETRIEVAL_LOG
             )
             self._conn.commit()
         logger.debug("[MemoryStore] Schema đã sẵn sàng.")
@@ -206,6 +220,45 @@ class SQLiteMemoryStore(IMemoryStore):
         with self._lock:
             rows = self._conn.execute(sql, (memory_type, n)).fetchall()
         return [dict(row) for row in rows]
+
+    def log_retrieval(self, query: str, config_meta: Dict[str, Any], chunks: List[Dict[str, Any]], latency_ms: float) -> None:
+        import json
+        sql = """
+            INSERT INTO retrieval_log (
+                query, embedding_model, reranker, policy, collection, chunks_json, latency_ms, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        # Chuyển đổi chunks thành JSON để lưu
+        # Giữ lại các trường quan trọng để tiết kiệm dung lượng, nhưng đủ để debug
+        clean_chunks = []
+        for c in chunks:
+            clean_chunk = {
+                "chunk_id": c.get("chunk_id"),
+                "score": c.get("score"),
+                "rerank_score": c.get("rerank_score"),
+                "source": c.get("source"),
+                "rank_before": c.get("rank_before"),
+                "rank_after": c.get("rank_after"),
+                "text_preview": c.get("text", "")[:100] + "..." if c.get("text") else ""
+            }
+            clean_chunks.append(clean_chunk)
+            
+        chunks_json = json.dumps(clean_chunks, ensure_ascii=False)
+        config_json = json.dumps(config_meta, ensure_ascii=False)
+        
+        with self._lock:
+            self._conn.execute(sql, (
+                query,
+                config_meta.get("embedding_model", ""),
+                config_meta.get("reranker", ""),
+                config_meta.get("policy", ""),
+                config_json, # Sử dụng cột collection để lưu toàn bộ config_json
+                chunks_json,
+                latency_ms,
+                self._now_iso()
+            ))
+            self._conn.commit()
+        logger.debug(f"[MemoryStore] Đã lưu retrieval log cho query: '{query[:30]}...'")
 
     def close(self) -> None:
         """Đóng kết nối SQLite an toàn."""

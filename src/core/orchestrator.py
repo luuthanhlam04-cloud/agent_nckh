@@ -25,7 +25,12 @@ import re
 import json
 import logging
 import gc
-from typing import Optional, List, Dict, Any, TypedDict, Literal
+from typing import Optional, List, Dict, Any, TypedDict, Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.core.interfaces import IKnowledgeStore
+    from src.core.conversation_memory import ConversationMemory
+
 
 import google.genai as genai
 from src.shared.metrics import PipelineMetrics, timed
@@ -51,7 +56,7 @@ logger = logging.getLogger("Orchestrator")
 # â”€â”€â”€ Config (Ä‘á»c tá»« env Ä‘Ã£ Ä‘Æ°á»£c load_dotenv() trong main.py) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 from src.shared.config import GEMINI_API_KEY
 
-CRITIQUE_MODEL    = "gemini-3.1-flash-lite"             # Benchmarked: nhanh nhat (0.72s), JSON mode, mien phi
+CRITIQUE_MODEL    = "gemini-3.5-flash-lite"             # Benchmarked: nhanh nhat, JSON mode, mien phi
 WORKER_MODEL      = "google/gemini-2.5-pro"          # Model manh qua OpenRouter
 OPENROUTER_BASE   = "https://openrouter.ai/api/v1"
 MAX_SEARCH_ITER   = 3                                # Gioi han vong lap DuckDuckGo
@@ -316,9 +321,9 @@ NGá»® Cáº¢NH RAG TÃŒM Ä Æ¯á»¢C:
             )
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• 
 #  ReActOrchestrator - MÃ¡y tráº¡ng thÃ¡i ReAct (State Machine)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• â• 
 
 # Các prompt đã chuyển sang PromptBuilder
 
@@ -393,6 +398,7 @@ class ReActOrchestrator:
                 context_chunks = self._rag.retrieve_context(
                     query=state["user_input"],
                     top_k=5,
+                    metrics=state["metrics"]
                 )
             state["metrics"].chunks_retrieved = len(context_chunks)
             # LÆ°u nguá»“n Ä‘á»ƒ get_last_sources() tráº£ vá» cho DocxExporter (Giai Ä‘oáº¡n 5)
@@ -403,6 +409,27 @@ class ReActOrchestrator:
                 "[ReAct:RETRIEVE] Thu Ä‘Æ°á»£c %d chunks tá»« %d nguá»“n.",
                 len(context_chunks), len(self._last_sources)
             )
+            
+            # Lưu log retrieval
+            from src.shared.rag_config import get_rag_config
+            from src.db.memory_store import SQLiteMemoryStore
+            config = get_rag_config()
+            config_meta = {
+                "embedding_model": config.embedding.provider,
+                "reranker": config.reranker.provider if config.reranker.enabled else "none",
+                "policy": "Hybrid (Wide)",
+                "collection": "scholar_knowledge",
+                "wide_factor": config.retrieval.wide_factor,
+                "top_k": config.retrieval.top_k,
+                "prompt_version": config.prompt_version
+            }
+            try:
+                store = SQLiteMemoryStore()
+                store.log_retrieval(state["user_input"], config_meta, context_chunks, state["metrics"].qdrant_ms)
+                store.close()
+            except Exception as log_err:
+                logger.error(f"[ReAct:RETRIEVE] Lỗi lưu log_retrieval: {log_err}")
+                
             return {**state, "context_chunks": context_chunks}
         except Exception as e:
             logger.error("[ReAct:RETRIEVE] Lá»—i truy xuáº¥t RAG: %s", e, exc_info=True)
@@ -492,41 +519,24 @@ class ReActOrchestrator:
         """
         BÆ°á»›c 5.3: Nhá»“i ngá»¯ cáº£nh vÃ o prompt vÃ  gá» i WorkerEngine sinh cÃ¢u tráº£ lá» i.
         """
-        # [I4 FIX] Gioi han web_results truoc khi nho vao prompt
-        # Sau 3 vong Ã— 5 ket qua = 15 web results co the vuot token limit 32K
-        all_web = state.get("web_results", [])
-        web_results_capped = all_web[-MAX_WEB_IN_PROMPT:]  # Lay 5 ket qua moi nhat
-        if len(all_web) > MAX_WEB_IN_PROMPT:
-            logger.info(
-                "[ReAct:GENERATE] Cap web results: %d -> %d de tranh vuot token limit.",
-                len(all_web), MAX_WEB_IN_PROMPT,
+        from src.core.context_manager import ContextManager
+        from src.core.prompt_builder import PromptBuilder
+        
+        with timed(state["metrics"], "prompt_build_ms"):
+            # Sử dụng ContextManager để quản lý Token Budgeting và chuẩn bị PromptContext
+            ctx_mgr = ContextManager(max_tokens=8000) # Lấy giới hạn 8000 tokens an toàn
+            ctx = ctx_mgr.build_context(
+                user_query=state['user_input'],
+                rag_chunks=state.get("context_chunks", []),
+                web_results=state.get("web_results", []),
+                # Có thể truyền conversation history từ memory vào đây nếu cần, hiện tại không có trong state
+                conversation_history="" 
             )
-
-        rag_text = "\n\n".join(
-            f"[Tai lieu {i+1} | {c.get('source', 'unknown')} trang {c.get('page', 0)}]\n{c.get('text', '')}"
-            for i, c in enumerate(state.get("context_chunks", []))
-        )
-        web_text = "\n\n".join(
-            f"[Ket qua web {i+1}]\n{w}"
-            for i, w in enumerate(web_results_capped)
-        )
-
-        context_combined = ""
-        if rag_text:
-            context_combined += f"=== TÃ i liá»‡u ná»™i bá»™ ===\n{rag_text}\n\n"
-        if web_text:
-            context_combined += f"=== Káº¿t quáº£ tÃ¬m kiáº¿m web ===\n{web_text}\n\n"
-
-        if not context_combined:
-            context_combined = "(KhÃ´ng tÃ¬m tháº¥y ngá»¯ cáº£nh. Tráº£ lá» i dá»±a trÃªn kiáº¿n thá»©c chung.)"
-
-        user_prompt = f"""NGá»® Cáº¢NH:
-{context_combined}
-
-CÃ‚U Há»ŽI:
-{state['user_input']}
-
-Tráº£ lá» i báº±ng tiáº¿ng Viá»‡t há» c thuáº­t:"""
+            
+            # Cập nhật context_chunks để DocxExporter nếu cần thiết có the dùng
+            self._last_sources = ctx.doc_sources
+            
+            system_prompt, user_prompt = PromptBuilder.build_answer(ctx, fast=state.get("_is_fast", False))
 
         try:
             with timed(state["metrics"], "llm_generate_ms"):
@@ -654,17 +664,24 @@ Tráº£ lá» i báº±ng tiáº¿ng Viá»‡t há» c thuáº­t:"""
         # 6. Yield tá»«ng pháº§n (Náº¿u LLM tráº£ vá»  generator)
         import time
         t0 = time.perf_counter()
+        total_chars = 0
+        
         if isinstance(state["final_answer"], str):
             metrics.llm_total_ms = (time.perf_counter() - t0) * 1000
+            metrics.add_trace_event("llm", metrics.llm_total_ms, type="non-streaming")
+            total_chars = len(state["final_answer"])
             yield state["final_answer"]
         else:
             first = True
             for chunk in state["final_answer"]:
+                total_chars += len(chunk)
                 if first:
                     metrics.llm_first_token_ms = (time.perf_counter() - t0) * 1000
+                    metrics.add_trace_event("llm_ttft", metrics.llm_first_token_ms)
                     first = False
                 yield chunk
             metrics.llm_total_ms = (time.perf_counter() - t0) * 1000
+            metrics.add_trace_event("llm_total", metrics.llm_total_ms, type="streaming")
 
         logger.info(
             "[ReActOrchestrator] === HoÃ n thÃ nh. "
@@ -672,6 +689,10 @@ Tráº£ lá» i báº±ng tiáº¿ng Viá»‡t há» c thuáº­t:"""
             state["search_iterations"], total_chars,
         )
         metrics.log_summary()
+        
+        from src.shared.rag_config import get_rag_config
+        if get_rag_config().dev_mode:
+            metrics.print_trace_tree()
 
     def get_last_sources(self) -> list:
         """
