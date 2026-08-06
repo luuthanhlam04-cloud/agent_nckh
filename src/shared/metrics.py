@@ -32,6 +32,27 @@ class PipelineMetrics:
     critique_rounds: int = 0
     critique_score: float = 0.0
     web_search_used: bool = False
+    
+    # Trace Tree Events
+    trace_events: list = field(default_factory=list)
+
+    def add_trace_event(self, stage: str, ms: float, **kwargs):
+        event = {"stage": stage, "ms": ms}
+        event.update(kwargs)
+        self.trace_events.append(event)
+        
+    def print_trace_tree(self):
+        print("\n=== [DEV MODE] TRACE TREE ===")
+        for event in self.trace_events:
+            stage = event.get("stage", "unknown").upper()
+            ms = event.get("ms", 0.0)
+            details = ", ".join(f"{k}={v}" for k, v in event.items() if k not in ["stage", "ms"])
+            # Vẽ một timeline giả lập (1 block = 10ms, max 20 blocks)
+            blocks = int(ms / 10)
+            blocks = min(blocks, 20)
+            bar = "■" * blocks
+            print(f"{stage:<15} | {ms:>6.1f}ms | {bar:<20} | {details}")
+        print("=============================\n")
 
     def log_summary(self):
         _log.info(
@@ -46,8 +67,10 @@ class PipelineMetrics:
         )
 
 @contextmanager
-def timed(metrics: PipelineMetrics, field_name: str):
+def timed(metrics: PipelineMetrics, field_name: str, add_trace: bool = True, **trace_kwargs):
     t0 = time.perf_counter()
     yield
     elapsed = (time.perf_counter() - t0) * 1000
     setattr(metrics, field_name, round(elapsed, 2))
+    if add_trace:
+        metrics.add_trace_event(stage=field_name.replace('_ms', ''), ms=round(elapsed, 2), **trace_kwargs)
