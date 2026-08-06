@@ -22,8 +22,11 @@ import logging
 import gc
 from typing import Optional, List, Dict, Any
 
+from src.shared.rag_config import get_rag_config
+from src.db.reranker import get_reranker
+from src.db.embeddings import get_embedding
+
 import torch
-from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -41,10 +44,8 @@ from neo4j import GraphDatabase, Driver, exceptions as neo4j_exceptions
 logger = logging.getLogger("HybridRAG")
 
 # ─── Config (đọc từ env đã được load_dotenv() trong main.py) ───────────────────
-EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"
 QDRANT_COLLECTION_NAME = "scholar_knowledge"
 GRAPH_RESULT_SCORE_BOOST = 0.85
-QDRANT_VECTOR_SIZE = 768  # Kích thước vector của gte-multilingual-base
 QDRANT_PATH = os.path.join(os.path.dirname(__file__), "../../qdrant_storage")
 
 from src.shared.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
@@ -53,18 +54,23 @@ from src.shared.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
 #  TẦNG 1: QdrantManager - Vector Database Cục bộ
 # ══════════════════════════════════════════════════════════════════════════════
 from src.core.interfaces import IKnowledgeStore
+class EmbeddingDimensionMismatch(Exception):
+    def __init__(self, expected: int, actual: int, model: str):
+        super().__init__(f"Kích thước vector không khớp! Collection yêu cầu {expected}, nhưng model {model} trả về {actual}.")
+        self.expected = expected
+        self.actual = actual
+        self.model = model
+
 class QdrantManager(IKnowledgeStore):
     """
     Quản lý Vector Database Qdrant chạy ở chế độ Embedded (Local).
     - Không cần Docker, không cần server riêng.
     - Ghi thẳng file nhị phân xuống SSD NVMe qua đường dẫn QDRANT_PATH.
-    - Sử dụng model MiniLM đa ngôn ngữ để embedding, hỗ trợ truy xuất
-      xuyên ngôn ngữ (tiếng Việt hỏi -> tìm được tài liệu tiếng Anh).
     """
 
     def __init__(self):
         self._client: Optional[QdrantClient] = None
-        self._model: Optional[SentenceTransformer] = None
+        self.embedding = get_embedding()
 
     def _get_client(self) -> QdrantClient:
         """Lazy-init client để tiết kiệm RAM khi không dùng."""
@@ -75,17 +81,25 @@ class QdrantManager(IKnowledgeStore):
             self._ensure_collection()
         return self._client
 
-    def _get_model(self) -> SentenceTransformer:
-        """Lazy-init model embedding để chỉ tải khi cần thiết."""
-        if self._model is None:
-            self._model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-            logger.info("[Qdrant] Model embedding đã sẵn sàng.")
-        return self._model
+    def ping(self):
+        """Khởi động/Wakup client và model (dùng cho Benchmark)"""
+        self.embedding.warmup()
+        if self._client is None:
+            self._get_client()
+        else:
+            self._client.get_collections()
 
     def _has_dimension_mismatch(self) -> bool:
         try:
             col_info = self._client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
-            return col_info.config.params.vectors.size != QDRANT_VECTOR_SIZE
+            actual_dim = self.embedding.dimension
+            expected_dim = col_info.config.params.vectors.size
+            if actual_dim != expected_dim:
+                raise EmbeddingDimensionMismatch(expected=expected_dim, actual=actual_dim, model=self.embedding.model_name)
+            return False
+        except EmbeddingDimensionMismatch as e:
+            logger.error(str(e))
+            return True
         except Exception:
             return False
 
@@ -93,7 +107,7 @@ class QdrantManager(IKnowledgeStore):
         self._client.create_collection(
             collection_name=QDRANT_COLLECTION_NAME,
             vectors_config=VectorParams(
-                size=QDRANT_VECTOR_SIZE,
+                size=self.embedding.dimension,
                 distance=Distance.COSINE,
             ),
         )
@@ -111,7 +125,7 @@ class QdrantManager(IKnowledgeStore):
         os.makedirs(QDRANT_PATH, exist_ok=True)
         self._client = QdrantClient(path=QDRANT_PATH)
         self._create_collection()
-        logger.info(f"[Qdrant] Đã recreate collection: '{QDRANT_COLLECTION_NAME}' với size {QDRANT_VECTOR_SIZE}")
+        logger.info(f"[Qdrant] Đã recreate collection: '{QDRANT_COLLECTION_NAME}' với size {self.embedding.dimension}")
 
     def _ensure_collection(self):
         """Tạo collection nếu chưa tồn tại hoặc sai dimension."""
@@ -127,8 +141,7 @@ class QdrantManager(IKnowledgeStore):
                 logger.info(f"[Qdrant] Collection '{QDRANT_COLLECTION_NAME}' đã tồn tại và đúng dimension.")
     def embed_text(self, text: str) -> List[float]:
         """Chuyển đổi đoạn văn bản thành vector số học."""
-        # e5-base yêu cầu prefix 'query: ' cho tìm kiếm
-        return self._get_model().encode(f"query: {text}", normalize_embeddings=True).tolist()
+        return self.embedding.embed_query(text)
 
     def upsert_chunks(self, chunks: List[Dict[str, Any]]) -> List[str]:
         """
@@ -143,19 +156,20 @@ class QdrantManager(IKnowledgeStore):
             ID này sẽ được đồng bộ sang Neo4j.
         """
         client = self._get_client()
-        model = self._get_model()
 
         chunk_ids = []
         points = []
+        
+        texts_to_embed = [chunk["text"] for chunk in chunks]
+        vectors = self.embedding.embed_documents(texts_to_embed)
 
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
             metadata = chunk.get("metadata", {})
             chunk_type = metadata.get("chunk_type", "legacy")
             chunk_id = metadata.get("chunk_id", str(uuid.uuid4()))
             parent_id = metadata.get("parent_id")
 
-            # e5-base yêu cầu prefix 'passage: ' cho tài liệu lưu trữ
-            vector = model.encode(f"passage: {chunk['text']}", normalize_embeddings=True).tolist()
+            vector = vectors[i]
             payload = {
                 "chunk_type": chunk_type,
                 "text": chunk["text"],
@@ -521,6 +535,13 @@ class HybridRAG:
         Returns:
             Thống kê kết quả nạp dữ liệu.
         """
+        # Bước 0: Knowledge Filter
+        from src.db.knowledge_filter import KnowledgeFilter
+        chunks, stats = KnowledgeFilter.filter_and_normalize(chunks)
+        if not chunks:
+            logger.warning("[HybridRAG] Tất cả chunks đều bị loại bỏ bởi Knowledge Filter.")
+            return {"status": "failed", "reason": "Tất cả chunks không hợp lệ", "filter_stats": stats}
+
         # Bước 1: Lưu tất cả chunks vào Qdrant, nhận về danh sách chunk_id
         logger.info(f"[HybridRAG] Bắt đầu nạp {len(chunks)} chunks vào Qdrant...")
         chunk_ids = self.qdrant.upsert_chunks(chunks)
@@ -571,51 +592,47 @@ class HybridRAG:
             "nodes_created": len(node_results),
             "relationships_created": len(relationships) if relationships else 0,
             "chunk_ids_sample": chunk_ids[:3],  # Log 3 ID đầu để debug
+            "filter_stats": stats
         }
         logger.info(f"[HybridRAG] Nạp xong! Tóm tắt: {summary}")
         return summary
 
-    def retrieve_context(self, query: str, top_k: int = 5) -> List[Dict]:
+    def retrieve_context(self, query: str, top_k: int = 5, metrics: Any = None) -> List[Dict]:
         """
-        Luồng truy xuất lai kép theo đặc tả (Bước 5.1 -> 5.2 -> 5.3).
-
-        Chiến lược:
-        1. Tìm kiếm vector similarity trực tiếp qua Qdrant (cho câu hỏi chung).
-        2. Merge với kết quả từ đồ thị Neo4j (cho câu hỏi có thực thể cụ thể).
-        3. Loại bỏ kết quả trùng lặp, sắp xếp theo điểm.
-
-        Args:
-            query: Câu hỏi của người dùng.
-            top_k: Số lượng đoạn văn trả về.
-
-        Returns:
-            Danh sách đoạn văn ngữ cảnh được xếp hạng.
+        Luồng truy xuất lai kép theo đặc tả, sử dụng Reranker.
         """
-        logger.info(f"[HybridRAG] Truy xuất ngữ cảnh cho query: '{query[:50]}...'")
+        import time
+        config = get_rag_config()
+        wide_k = top_k * config.retrieval.wide_factor
+        
+        logger.info(f"[HybridRAG] Truy xuất ngữ cảnh (wide_k={wide_k}) cho query: '{query[:50]}...'")
 
         # Đường 1: Vector search trực tiếp qua Qdrant
-        vector_results = self.qdrant.search(query, top_k=top_k)
+        t0 = time.perf_counter()
+        vector_results = self.qdrant.search(query, top_k=wide_k)
+        qdrant_ms = (time.perf_counter() - t0) * 1000
+        if metrics: metrics.add_trace_event("qdrant", qdrant_ms, chunks=len(vector_results))
 
         # Đường 2: Graph search qua Neo4j -> lấy chunk_id -> Qdrant
-        # [BUG-2 FIX] Bọc neo4j call trong try/except: nếu NEO4J_URI trống hoặc mất mạng
-        # → chỉ dùng vector search (graceful degradation), không crash toàn bộ retrieve_context().
         graph_results = []
+        t1 = time.perf_counter()
         try:
             graph_chunk_ids = self.neo4j.query_entity_chunk_ids(keyword=query)
             if graph_chunk_ids:
-                graph_results = self.qdrant.get_chunks_by_ids(graph_chunk_ids[:top_k])
-                # Gán điểm ưu tiên cho kết quả từ đồ thị (entity-aware retrieval)
+                graph_results = self.qdrant.get_chunks_by_ids(graph_chunk_ids[:wide_k])
                 for r in graph_results:
                     r["score"] = r.get("score", GRAPH_RESULT_SCORE_BOOST)
                     r["source_method"] = "graph"
         except (ValueError, Exception) as e:
-            # ValueError: NEO4J_URI trống. Exception: mất kết nối mạng/timeout.
             logger.warning("[HybridRAG] Neo4j không khả dụng, chỉ dùng vector search: %s", e)
+        neo4j_ms = (time.perf_counter() - t1) * 1000
+        if metrics: metrics.add_trace_event("neo4j", neo4j_ms, chunks=len(graph_results))
 
         for r in vector_results:
             r["source_method"] = "vector"
 
         # Merge và loại bỏ trùng lặp theo chunk_id
+        t2 = time.perf_counter()
         seen_ids = set()
         merged = []
         for r in graph_results + vector_results:
@@ -623,12 +640,28 @@ class HybridRAG:
             if cid not in seen_ids:
                 seen_ids.add(cid)
                 merged.append(r)
+        
+        # Ghi nhận rank ban đầu trước khi rerank
+        for i, chunk in enumerate(merged):
+            chunk["rank_before"] = i + 1
+            
+        merge_ms = (time.perf_counter() - t2) * 1000
+        if metrics: metrics.add_trace_event("merge", merge_ms, chunks_before_merge=len(graph_results)+len(vector_results), unique_chunks=len(merged))
 
-        # Sắp xếp theo điểm liên quan giảm dần
-        merged.sort(key=lambda x: x.get("score", 0), reverse=True)
-        top_results = merged[:top_k]
+        logger.info(f"[HybridRAG] Gộp được {len(merged)} unique chunks. Chuyển qua Reranker...")
+        
+        t3 = time.perf_counter()
+        reranker = get_reranker()
+        top_results = reranker.rerank(query=query, chunks=merged, top_k=top_k)
+        
+        # Ghi nhận rank sau khi rerank
+        for i, chunk in enumerate(top_results):
+            chunk["rank_after"] = i + 1
+            
+        rerank_ms = (time.perf_counter() - t3) * 1000
+        if metrics: metrics.add_trace_event("rerank", rerank_ms, provider=config.reranker.provider, chunks_returned=len(top_results))
 
-        logger.info(f"[HybridRAG] Trả về {len(top_results)} chunks ngữ cảnh.")
+        logger.info(f"[HybridRAG] Trả về {len(top_results)} chunks ngữ cảnh sau rerank.")
         return top_results
 
     def close(self):

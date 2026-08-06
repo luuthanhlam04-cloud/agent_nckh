@@ -20,6 +20,43 @@ class IKnowledgeStore(ABC):
         pass
 
 
+class IEmbedding(ABC):
+    """
+    Interface cho các mô hình nhúng (Embedding Models).
+    """
+    @property
+    @abstractmethod
+    def dimension(self) -> int:
+        pass
+
+    @property
+    @abstractmethod
+    def model_name(self) -> str:
+        pass
+
+    @abstractmethod
+    def embed_query(self, text: str) -> List[float]:
+        pass
+
+    @abstractmethod
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        pass
+        
+    @abstractmethod
+    def warmup(self) -> None:
+        """Khởi động model/session để không bị tính vào latency."""
+        pass
+
+
+class IRetriever(ABC):
+    """
+    Interface cho các bộ máy truy xuất (Retrievers).
+    """
+    @abstractmethod
+    def retrieve(self, query: str, top_k: int) -> List[Dict[str, Any]]:
+        pass
+
+
 class ILLMClient(ABC):
     """
     Interface cho LLM providers.
@@ -56,6 +93,21 @@ class IRetriever(ABC):
     """
     @abstractmethod
     def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        pass
+
+
+class IReranker(ABC):
+    """
+    Interface cho các mô hình Reranker (VD: Voyage, Gemini, CrossEncoder).
+    """
+    @abstractmethod
+    def rerank(self, query: str, chunks: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+        """Trả về list chunks đã được sort lại theo relevance, có thêm trường 'rerank_score'."""
+        pass
+
+    @abstractmethod
+    def warmup(self) -> None:
+        """Khởi động Reranker (Ví dụ: Ping API)"""
         pass
 
 
@@ -96,6 +148,11 @@ class IMemoryStore(ABC):
     @abstractmethod
     def get_recent_notes(self, n: int = 20) -> List[Dict[str, Any]]:
         """Lấy n ghi chú nhanh gần nhất."""
+        pass
+
+    @abstractmethod
+    def log_retrieval(self, query: str, config_meta: Dict[str, Any], chunks: List[Dict[str, Any]], latency_ms: float) -> None:
+        """Lưu log retrieval vào cơ sở dữ liệu."""
         pass
 
     @abstractmethod
