@@ -346,3 +346,51 @@ class DependencyDirectionRule(BaseRule):
                     ),
                 ))
         return violations
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  A008 — Pure Router
+# ──────────────────────────────────────────────────────────────────────────────
+class PureRouterRule(BaseRule):
+    """
+    Phát hiện semantic_interceptor.py chứa logic thực thi trực tiếp thay vì điều phối.
+    Cấm import subprocess, yt_dlp, googleapiclient, os.startfile, webbrowser.
+    """
+    tier = "A"
+    rule_id = "A008"
+    rule_name = "PureRouter"
+    severity = Severity.FAIL
+
+    _TARGET_FILE = "semantic_interceptor.py"
+    _BANNED_MODULES = {"subprocess", "yt_dlp", "googleapiclient", "webbrowser"}
+    _BANNED_OS_ATTRS = {"startfile"} # Cấm os.startfile
+
+    def check(self, tree: ast.AST, filepath: str, ctx=None) -> list[RuleViolation]:
+        if os.path.basename(filepath) != self._TARGET_FILE:
+            return []
+
+        violations = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in self._BANNED_MODULES:
+                        violations.append(self._violation(
+                            filepath, node.lineno,
+                            detail=f"Pure Router imports forbidden module: {alias.name}",
+                            why="semantic_interceptor must delegate to src/services, not execute directly.",
+                        ))
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and node.module.split('.')[0] in self._BANNED_MODULES:
+                    violations.append(self._violation(
+                        filepath, node.lineno,
+                        detail=f"Pure Router imports from forbidden module: {node.module}",
+                        why="semantic_interceptor must delegate to src/services, not execute directly.",
+                    ))
+            elif isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Attribute) and getattr(node.func.value, "id", "") == "os" and node.func.attr in self._BANNED_OS_ATTRS:
+                    violations.append(self._violation(
+                        filepath, node.lineno,
+                        detail=f"Pure Router calls forbidden OS function: os.{node.func.attr}()",
+                        why="semantic_interceptor must delegate to src/services, not execute directly.",
+                    ))
+        return violations

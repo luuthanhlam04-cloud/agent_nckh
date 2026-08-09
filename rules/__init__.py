@@ -11,6 +11,7 @@ from rules.tier_a_safety import (
     NoBareExceptRule,
     GeneratorReturnRule,
     DependencyDirectionRule,
+    PureRouterRule,
 )
 from rules.tier_b_quality import (
     LongFunctionRule,
@@ -20,6 +21,7 @@ from rules.tier_b_quality import (
     ConfigRuleCheck,
     LoggingRuleCheck,
     NoPrintRule,
+    StructuredGatingRule,
 )
 from rules.tier_c_convention import (
     WorkerNamingRule,
@@ -40,6 +42,7 @@ ALL_RULES = [
     NoBareExceptRule(),
     GeneratorReturnRule(),
     DependencyDirectionRule(),
+    PureRouterRule(),
 
     # Tier B — Code Quality
     LongFunctionRule(),
@@ -49,6 +52,7 @@ ALL_RULES = [
     ConfigRuleCheck(),
     LoggingRuleCheck(),
     NoPrintRule(),
+    StructuredGatingRule(),
 
     # Tier C — Convention
     WorkerNamingRule(),

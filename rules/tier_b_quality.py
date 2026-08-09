@@ -213,7 +213,7 @@ class LoggingRuleCheck(BaseRule):
 class NoPrintRule(BaseRule):
     """Phát hiện print() trong source files (ngoài __main__ block)."""
     tier = "B"
-    rule_id = "B007"
+    rule_id = "B008"
     rule_name = "NoPrint"
     severity = Severity.WARN
 
@@ -261,4 +261,40 @@ class NoPrintRule(BaseRule):
                 self_.generic_visit(node)
 
         MainBlockVisitor().visit(tree)
+        return violations
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  B007 — Structured Gating Rule
+# ──────────────────────────────────────────────────────────────────────────────
+class StructuredGatingRule(BaseRule):
+    """
+    Phát hiện việc yêu cầu LLM trả về JSON nhưng thiếu response_schema.
+    Nguy cơ: LLM ảo giác (hallucinate) các keys không dự đoán trước được.
+    """
+    tier = "B"
+    rule_id = "B007"
+    rule_name = "StructuredGating"
+    severity = Severity.WARN
+
+    def check(self, tree: ast.AST, filepath: str, ctx=None) -> list[RuleViolation]:
+        violations = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                # We check for genai.types.GenerateContentConfig() or similar calls with kwargs
+                has_json_mime = False
+                has_schema = False
+                for kw in node.keywords:
+                    if kw.arg == "response_mime_type":
+                        if isinstance(kw.value, ast.Constant) and kw.value.value == "application/json":
+                            has_json_mime = True
+                    if kw.arg == "response_schema":
+                        has_schema = True
+
+                if has_json_mime and not has_schema:
+                    violations.append(self._violation(
+                        filepath, node.lineno,
+                        detail="response_mime_type='application/json' used without response_schema",
+                        why="JSON output without schema validation can cause runtime hallucination crashes.",
+                    ))
         return violations
