@@ -14,8 +14,6 @@ import re
 import json
 import math
 import numpy as np
-import subprocess
-import webbrowser
 import logging
 import threading
 import urllib.parse
@@ -24,10 +22,11 @@ from datetime import datetime
 from typing import Optional, Tuple, Any, Callable, List
 
 from src.core.interfaces import IMemoryStore
+from src.services.daily import os_service, media_service, workspace_service
 
 logger = logging.getLogger("SemanticInterceptor")
 
-THRESHOLD = 0.87  # Ngưỡng Cosine Similarity để quyết định
+THRESHOLD = 0.70  # Ngưỡng Cosine Similarity để quyết định
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TẬP NEO NGỮ NGHĨA (ANCHORS)
@@ -63,6 +62,7 @@ class SemanticInterceptor:
         self._memory_store = memory_store
         self._anchor_vectors: List[Tuple[str, List[float]]] = []
         self._is_ready = False
+        self._status = "INITIALIZING"
         
         # Load cấu hình từ file intents.json
         global _ANCHORS_MAP
@@ -79,19 +79,25 @@ class SemanticInterceptor:
         threading.Thread(target=self._init_anchors, daemon=True).start()
 
     def _init_anchors(self):
-        for intent, phrases in _ANCHORS_MAP.items():
-            for phrase in phrases:
-                vec = self.embed_func(phrase)
-                self._anchor_vectors.append((intent, vec))
-        
-        # Build numpy matrix for fast cosine similarity
-        self._anchor_matrix = np.array([v for _, v in self._anchor_vectors])
-        # Normalize vectors for simple dot product == cosine similarity
-        norms = np.linalg.norm(self._anchor_matrix, axis=1, keepdims=True)
-        self._anchor_matrix = np.divide(self._anchor_matrix, norms, out=np.zeros_like(self._anchor_matrix), where=norms!=0)
-        
-        self._is_ready = True
-        logger.info(f"[SemanticInterceptor] Đã mã hóa xong {len(self._anchor_vectors)} neo ngữ nghĩa.")
+        try:
+            for intent, phrases in _ANCHORS_MAP.items():
+                for phrase in phrases:
+                    vec = self.embed_func(phrase)
+                    self._anchor_vectors.append((intent, vec))
+            
+            # Build numpy matrix for fast cosine similarity
+            self._anchor_matrix = np.array([v for _, v in self._anchor_vectors])
+            # Normalize vectors for simple dot product == cosine similarity
+            norms = np.linalg.norm(self._anchor_matrix, axis=1, keepdims=True)
+            self._anchor_matrix = np.divide(self._anchor_matrix, norms, out=np.zeros_like(self._anchor_matrix), where=norms!=0)
+            
+            self._is_ready = True
+            self._status = "READY"
+            logger.info(f"[SemanticInterceptor] Đã mã hóa xong {len(self._anchor_vectors)} neo ngữ nghĩa.")
+        except Exception as e:
+            logger.error(f"[SemanticInterceptor] Lỗi khởi tạo anchors: {e}. Hệ thống sẽ chuyển sang Fallback Regex.")
+            self._is_ready = False  
+            self._status = "DEGRADED"
 
     def _filter_whisper_hallucination(self, text: str) -> bool:
         hallucinations = ["cảm ơn các bạn", "xin chào các bạn", "subtitles by", "amara.org", "thanks for watching", "hẹn gặp lại", "chúc một ngày tốt lành", "nhớ đăng ký kênh"]
@@ -117,7 +123,25 @@ class SemanticInterceptor:
 
     def intercept(self, user_input: str, last_response: str = "") -> Tuple[Optional[Any], Optional[str]]:
         text = user_input.strip()
-        if not text or not self._is_ready:
+        if not text:
+            return None, None
+            
+        if not self._is_ready:
+            if self._status == "DEGRADED":
+                logger.warning("[SemanticInterceptor] Running in fallback mode. Embeddings unavailable.")
+                
+            # Lỗi P1: Fallback regex tĩnh nếu embedding hỏng để không làm gãy toàn bộ Static Routing
+            t = text.lower()
+            if "mở youtube" in t:
+                return "OS_YOUTUBE", None
+            if "mở trình duyệt" in t or "web" in t:
+                return "OS_BROWSER", None
+            if "xem lịch" in t or "hôm nay có" in t:
+                return "CALENDAR_VIEW", None
+            if "tạo sự kiện" in t:
+                return "CALENDAR_CREATE", None
+            if "nhắc nhở" in t:
+                return "MEMORY_SAVE", None
             return None, None
 
         if self._filter_whisper_hallucination(text):
@@ -165,56 +189,39 @@ class SemanticInterceptor:
         return re.sub(r'[^a-zA-Z0-9\s-]', '', cmd).strip()
 
     def _execute_intent(self, intent: str, text: str, last_response: str) -> Tuple[Optional[Any], Optional[str]]:
-        now = datetime.now()
-        weekday = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"][now.weekday()]
-
         if intent == "GREETING":
             return "Chào sếp! Hệ thống luôn sẵn sàng hỗ trợ, sếp cần giúp gì ạ?", "fast"
 
         elif intent == "TIME_QUERY":
-            # Xử lý nhanh ngày giờ
-            if "năm" in text.lower():
-                return f"Năm nay là năm {now.year}.", "fast"
-            if "tháng" in text.lower():
-                return f"Bây giờ là tháng {now.month} năm {now.year}.", "fast"
-            if "ngày" in text.lower() or "thứ" in text.lower():
-                return f"Hôm nay là {weekday}, ngày {now.strftime('%d/%m/%Y')}.", "fast"
-            return f"Bây giờ là {now.strftime('%H:%M')} phút.", "fast"
+            return os_service.get_current_time(), "fast"
+
+        elif intent == "OS_VOLUME":
+            action = self._extract_payload(text, ["tăng", "giảm", "tắt", "mở", "điều chỉnh"])
+            if not action: action = text
+            return os_service.system_volume(action), "ninja"
 
         elif intent == "OS_YOUTUBE":
             payload = self._extract_payload(text, ["mở", "bật", "tìm", "phát", "youtube", "bài nhạc", "bài hát", "video", "cho nghe", "hãy", "giúp tôi", "nhờ bạn"])
             if not payload: payload = text
-            self._play_youtube_async(payload)
-            return f"Đang tìm và phát trên Youtube: {payload}", "ninja"
+            return media_service.search_youtube(payload), "ninja"
             
         elif intent == "OS_WEBSITE":
             domain = self._extract_payload(text, ["mở trang web", "vào trang web", "truy cập website", "truy cập trang", "vào trang", "vào mạng", "mở trang", "vào", "mở", "truy cập", "lướt"])
             if not domain: domain = text
-            # Sử dụng DuckDuckGo "I'm Feeling Lucky" (!ducky) để tự động chuyển hướng đến trang đích
-            ducky_url = f"https://duckduckgo.com/?q=!ducky+{urllib.parse.quote(domain)}"
-            os.startfile(ducky_url)
-            return f"Đã mở trang web: {domain}", "ninja"
-            
-        elif intent == "OS_ZALO":
-            os.startfile("zalo:")
-            return "Đã mở Zalo.", "ninja"
+            return os_service.open_website(domain), "ninja"
             
         elif intent == "OS_APP":
             app = self._extract_payload(text, ["mở ứng dụng", "khởi động phần mềm", "khởi động ứng dụng", "bật phần mềm", "khởi chạy phần mềm", "mở app", "bật app", "mở", "bật", "khởi động", "khởi chạy"])
             if not app: app = text
-            # Dùng lệnh start của Windows để mở các app có trong PATH (notepad, winword, chrome...)
-            safe_app = self._sanitize_command(app)
-            if safe_app:
-                subprocess.Popen(f"start {safe_app}", shell=True)
-                return f"Đã gửi lệnh khởi chạy ứng dụng: {safe_app}", "ninja"
-            return "Tên ứng dụng không hợp lệ.", "ninja"
-            
-        elif intent == "OS_EXPLORER":
-            subprocess.Popen("explorer .", shell=True)
-            return "Đã mở File Explorer.", "ninja"
+            return os_service.open_application(app), "ninja"
+
+        elif intent == "CALENDAR_VIEW":
+            return workspace_service.get_calendar_events(text), "fast"
+
+        elif intent == "CALENDAR_CREATE":
+            return workspace_service.create_calendar_event(text), "fast"
 
         elif intent == "OBSIDIAN_SAVE":
-            # Xử lý trường hợp sếp bảo "lưu câu bạn vừa nói"
             if "bạn vừa nói" in text.lower() or "thông tin vừa rồi" in text.lower() or "câu vừa rồi" in text.lower():
                 payload = last_response if last_response else "Không có câu trả lời nào trước đó để lưu."
             else:
@@ -271,31 +278,3 @@ class SemanticInterceptor:
             return "REPEAT_LAST_VOICE", "ninja"
 
         return None, None
-
-    # ══════════════════════════════════════════════════════════════════════════════
-    #  HELPER YOUTUBE SEARCH
-    # ══════════════════════════════════════════════════════════════════════════════
-    def _play_youtube_async(self, query: str):
-        def _worker():
-            try:
-                import yt_dlp
-                ydl_opts = {
-                    'default_search': 'ytsearch',
-                    'noplaylist': True,
-                    'quiet': True,
-                    'extract_flat': True
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(f"ytsearch:{query}", download=False)
-                    if 'entries' in info and len(info['entries']) > 0:
-                        vid = info['entries'][0]['id']
-                        webbrowser.open(f"https://www.youtube.com/watch?v={vid}")
-                        return
-            except ImportError:
-                logger.info("[Interceptor] yt-dlp chưa được cài đặt. Kích hoạt Hybrid Fallback mở trình duyệt.")
-            except Exception as e:
-                logger.warning(f"[Interceptor] Lỗi lấy video YouTube qua yt-dlp: {e}")
-                
-            # FALLBACK: Lách Zero-Dependency
-            webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}")
-        threading.Thread(target=_worker, daemon=True, name="YouTubeAutoPlay").start()

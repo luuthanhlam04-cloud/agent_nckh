@@ -297,6 +297,7 @@ NGá»® Cáº¢NH RAG TÃŒM Ä Æ¯á»¢C:
                 config=genai_types.GenerateContentConfig(
                     system_instruction=_CRITIQUE_SYSTEM_PROMPT,
                     response_mime_type="application/json",
+                    response_schema=SelfCritiqueResult,
                     temperature=0.0,
                     max_output_tokens=256,
                 ),
@@ -410,25 +411,9 @@ class ReActOrchestrator:
                 len(context_chunks), len(self._last_sources)
             )
             
-            # Lưu log retrieval
-            from src.shared.rag_config import get_rag_config
-            from src.db.memory_store import SQLiteMemoryStore
-            config = get_rag_config()
-            config_meta = {
-                "embedding_model": config.embedding.provider,
-                "reranker": config.reranker.provider if config.reranker.enabled else "none",
-                "policy": "Hybrid (Wide)",
-                "collection": "scholar_knowledge",
-                "wide_factor": config.retrieval.wide_factor,
-                "top_k": config.retrieval.top_k,
-                "prompt_version": config.prompt_version
-            }
-            try:
-                store = SQLiteMemoryStore()
-                store.log_retrieval(state["user_input"], config_meta, context_chunks, state["metrics"].qdrant_ms)
-                store.close()
-            except Exception as log_err:
-                logger.error(f"[ReAct:RETRIEVE] Lỗi lưu log_retrieval: {log_err}")
+            # Lược bỏ việc gọi trực tiếp SQLiteMemoryStore (Vi phạm Tier A)
+            # Todo: Bơm IMemoryStore vào qua constructor nếu cần log_retrieval.
+            logger.info(f"[ReAct:RETRIEVE] {len(context_chunks)} chunks retrieved for query: {state['user_input']}")
                 
             return {**state, "context_chunks": context_chunks}
         except Exception as e:
@@ -493,7 +478,7 @@ class ReActOrchestrator:
             with timed(state["metrics"], "web_search_ms"):
                 with DDGS() as ddgs:
                     results = list(ddgs.text(
-                        keywords=state["user_input"],
+                        state["user_input"],
                         max_results=WEB_SEARCH_MAX_RESULTS,
                     ))
                     for r in results:
@@ -541,7 +526,7 @@ class ReActOrchestrator:
         try:
             with timed(state["metrics"], "llm_generate_ms"):
                 gen = self._worker.generate(
-                    system_prompt=_ANSWER_SYSTEM_PROMPT,
+                    system_prompt=system_prompt,
                     user_prompt=user_prompt,
                 )
             return {**state, "final_answer": gen}

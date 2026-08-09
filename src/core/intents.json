@@ -19,17 +19,27 @@
         "cho nghe bài hát",
         "mở bài hát lên"
     ],
-    "OS_ZALO": ["mở zalo", "vào ứng dụng zalo", "khởi động zalo"],
     "OS_APP": [
         "mở ứng dụng", "bật phần mềm", "khởi động ứng dụng", 
         "mở app", "khởi chạy phần mềm", "mở word", "mở excel", 
         "mở chrome", "mở notepad", "mở vscode"
     ],
-    "OS_EXPLORER": ["mở thư mục", "mở file explorer", "vào thư mục hiện tại"],
     "OS_WEBSITE": [
         "mở trang web", "vào website", "truy cập trang", "vào mạng",
         "mở facebook", "vào trang facebook", "truy cập vnexpress",
         "mở trang google docs", "vào dantri", "mở github"
+    ],
+    "OS_VOLUME": [
+        "tăng âm lượng", "giảm âm lượng", "tắt tiếng", 
+        "mở to loa lên", "giảm loa", "tắt loa"
+    ],
+    "CALENDAR_VIEW": [
+        "xem lịch hôm nay", "chiều nay có lịch không", 
+        "lịch trình của tôi", "đọc lịch cho tôi", "xem lịch"
+    ],
+    "CALENDAR_CREATE": [
+        "tạo sự kiện", "nhắc tôi họp lúc", "thêm vào lịch", 
+        "tạo lịch họp", "ghi vào lịch", "tạo lịch mới"
     ],
     "OBSIDIAN_SAVE": [
         "lưu vào ghi chú", 

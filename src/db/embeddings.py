@@ -46,12 +46,15 @@ class GeminiEmbedding(IEmbedding):
     """
     Sử dụng Gemini API để tạo vector nhúng.
     """
-    def __init__(self, model_name: str = "text-embedding-004"):
+    def __init__(self, model_name: str = "gemini-embedding-2"):
+        """
+        Khởi tạo wrapper cho Gemini Embedding.
+        :param model_name: Tên model, ưu tiên gemini-embedding-2
+        """
         self._model_name = model_name
+        # Gemini Embedding 2 mặc định là 3072, nhưng Qdrant đang dùng 768
         self._dimension = 768
         self._client = None
-        if not GEMINI_API_KEY:
-            logger.error("[GeminiEmbedding] GEMINI_API_KEY is missing!")
 
     @property
     def dimension(self) -> int:
@@ -70,19 +73,31 @@ class GeminiEmbedding(IEmbedding):
 
     def embed_query(self, text: str) -> List[float]:
         self.warmup()
-        response = self._client.models.embed_content(
-            model=self._model_name,
-            contents=text,
-        )
-        return response.embeddings[0].values
+        try:
+            # Ép kiểu output_dimensionality = 768 để tương thích với Qdrant collection cũ
+            res = self._client.models.embed_content(
+                model=self._model_name,
+                contents=text,
+                config={"output_dimensionality": self._dimension}
+            )
+            return res.embeddings[0].values
+        except Exception as e:
+            logger.error(f"[GeminiEmbedding] Lỗi khi gọi API: {e}")
+            # Trả về vector 0 nếu lỗi để hệ thống không crash (Fallback)
+            return [0.0] * self._dimension
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         self.warmup()
-        response = self._client.models.embed_content(
-            model=self._model_name,
-            contents=texts,
-        )
-        return [emb.values for emb in response.embeddings]
+        try:
+            res = self._client.models.embed_content(
+                model=self._model_name,
+                contents=texts,
+                config={"output_dimensionality": self._dimension}
+            )
+            return [e.values for e in res.embeddings]
+        except Exception as e:
+            logger.error(f"[GeminiEmbedding] Lỗi khi gọi API embed_documents: {e}")
+            return [[0.0] * self._dimension for _ in texts]
 
 def get_embedding() -> IEmbedding:
     config = get_rag_config()
