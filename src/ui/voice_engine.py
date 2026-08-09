@@ -39,8 +39,8 @@ SILENCE_DURATION_SEC  = 1.5    # Giay im lang de tu dong ngat mic
 MIN_AUDIO_DURATION    = 1.5    # Giay toi thieu (ngay hon bi bo qua)
 RECORD_TIMEOUT_SEC    = 30     # Giay toi da ghi am
 RMS_SPEECH_THRESHOLD  = 300    # Nguong RMS phan biet tieng noi vs tieng on
-GEMINI_STT_MODEL      = "gemini-3.5-flash-lite"
-GEMINI_LIVE_MODEL     = "gemini-live-2.5-flash-preview"
+GEMINI_STT_MODEL      = "gemini-2.5-flash"
+GEMINI_LIVE_MODEL     = "gemini-2.5-flash"
 
 # ── Singleton lock cho GeminiSTT (batch) ──────────────────────────────────────
 _gemini_stt_lock = threading.Lock()
@@ -798,7 +798,7 @@ class GeminiLiveSTT:
                         "[GeminiLiveSTT] Retry %d/%d [%s] sau %.0fs...",
                         attempt + 1, self._MAX_RETRIES, type(exc).__name__, delay
                     )
-                    time.sleep(delay)
+                    threading.Event().wait(delay)
                 else:
                     logger.error("[GeminiLiveSTT] Het retry. Loi: %s", last_exc)
 

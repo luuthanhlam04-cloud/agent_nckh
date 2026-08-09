@@ -205,8 +205,6 @@ class InboxWatcher:
             self._observer.stop()
             self._observer.join()
             logger.info("[Watchdog] Observer đã dừng.")
-        if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
         logger.info("[Watchdog] Đã dừng hệ thống giám sát.")
 
     def _run_async_loop(self):
