@@ -35,3 +35,13 @@ def search_youtube(query: str) -> str:
         
     threading.Thread(target=_worker, daemon=True, name="YouTubeAutoPlay").start()
     return f"Đang tìm và phát trên Youtube: {query}"
+
+
+def open_youtube_home() -> str:
+    """Mở trang chủ YouTube trong luồng phụ."""
+    threading.Thread(
+        target=lambda: webbrowser.open("https://www.youtube.com"),
+        daemon=True,
+        name="YouTubeHome"
+    ).start()
+    return "Đã mở trang chủ YouTube."

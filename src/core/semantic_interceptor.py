@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Optional, Tuple, Any, Callable, List
 
 from src.core.interfaces import IMemoryStore
+from src.core.intent_sniffer import HybridIntentSniffer
 from src.services.daily import os_service, media_service, workspace_service
 
 logger = logging.getLogger("SemanticInterceptor")
@@ -60,6 +61,7 @@ class SemanticInterceptor:
         """
         self.embed_func   = embed_func
         self._memory_store = memory_store
+        self.sniffer       = HybridIntentSniffer()
         self._anchor_vectors: List[Tuple[str, List[float]]] = []
         self._is_ready = False
         self._status = "INITIALIZING"
@@ -125,27 +127,47 @@ class SemanticInterceptor:
         text = user_input.strip()
         if not text:
             return None, None
-            
-        if not self._is_ready:
-            if self._status == "DEGRADED":
-                logger.warning("[SemanticInterceptor] Running in fallback mode. Embeddings unavailable.")
-                
-            # Lỗi P1: Fallback regex tĩnh nếu embedding hỏng để không làm gãy toàn bộ Static Routing
-            t = text.lower()
-            if "mở youtube" in t:
-                return "OS_YOUTUBE", None
-            if "mở trình duyệt" in t or "web" in t:
-                return "OS_BROWSER", None
-            if "xem lịch" in t or "hôm nay có" in t:
-                return "CALENDAR_VIEW", None
-            if "tạo sự kiện" in t:
-                return "CALENDAR_CREATE", None
-            if "nhắc nhở" in t:
-                return "MEMORY_SAVE", None
-            return None, None
 
         if self._filter_whisper_hallucination(text):
             return None, None
+
+        # ── 0. FAST DETERMINISTIC HYBRID INTENT SNIFFER (<1ms, $0 API) ──
+        sniff_res = self.sniffer.sniff(text)
+        if sniff_res.is_intercepted:
+            logger.info(
+                "[SemanticInterceptor] Sniffer intercepted: %s | Action: %s | Slot: '%s'",
+                sniff_res.intent, sniff_res.action_type, sniff_res.cleaned_slot
+            )
+            if sniff_res.needs_clarification:
+                return sniff_res.clarification_prompt, "fast"
+            if sniff_res.intent == "TIME_QUERY":
+                return os_service.get_current_time(), "fast"
+            elif sniff_res.intent == "NINJA_COPY":
+                if last_response:
+                    try:
+                        import pyperclip
+                        pyperclip.copy(last_response)
+                        return "Đã sao chép câu trả lời vào bộ nhớ tạm.", "fast"
+                    except ImportError:
+                        return "Lỗi: Chưa cài thư viện pyperclip.", "fast"
+                return "Chưa có câu trả lời nào để copy.", "fast"
+            elif sniff_res.intent == "FORCE_WEB":
+                return {"intent": "daily_task", "query": sniff_res.cleaned_slot}, "router"
+            elif sniff_res.intent == "EXPORT_DOCX":
+                return {"intent": "EXPORT_DOCX", "topic": sniff_res.cleaned_slot, "query": text}, "router"
+            elif sniff_res.intent == "OS_YOUTUBE":
+                if sniff_res.action_type == "youtube_home":
+                    return media_service.open_youtube_home(), "ninja"
+                return media_service.search_youtube(sniff_res.cleaned_slot), "ninja"
+            elif sniff_res.intent == "OS_VOLUME":
+                return os_service.system_volume(sniff_res.cleaned_slot), "ninja"
+            elif sniff_res.intent == "OS_APP":
+                return os_service.open_application(sniff_res.cleaned_slot), "ninja"
+
+        if not self._is_ready:
+            if self._status == "DEGRADED":
+                logger.warning("[SemanticInterceptor] Running in fallback mode. Embeddings unavailable.")
+            return {"intent": "research_query", "query": text}, "router"
 
         # 1. Tính toán Vector cho User Input
         user_vec  = np.array(self.embed_func(text))
