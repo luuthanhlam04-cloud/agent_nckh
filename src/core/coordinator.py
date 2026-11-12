@@ -125,3 +125,14 @@ class RequestCoordinator:
                 self._memory.add(user_input=query, agent_response=full_answer)
             except Exception as e:
                 logger.warning("[Coordinator] Không ghi được memory: %s", e)
+
+        # Gợi ý phản biện Socratic (Dialectic Thought Partner) cho các câu hỏi nghiên cứu
+        is_research = intent_type == "research_query" or any(
+            k in query.lower() for k in ["nghiên cứu", "paper", "giả định", "gap", "điểm nghẽn", "rag", "mô hình", "thuật toán"]
+        )
+        if is_research and full_answer and len(full_answer) > 80:
+            try:
+                from src.services.research_journal import ResearchJournalService
+                yield ResearchJournalService.generate_socratic_prompt(topic=query)
+            except Exception as _e:
+                logger.debug("[Coordinator] Bỏ qua Socratic hint: %s", _e)
