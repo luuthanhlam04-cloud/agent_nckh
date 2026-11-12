@@ -42,7 +42,7 @@ class PipelineMetrics:
         self.trace_events.append(event)
         
     def print_trace_tree(self):
-        print("\n=== [DEV MODE] TRACE TREE ===")
+        _log.info("=== [DEV MODE] TRACE TREE ===")
         for event in self.trace_events:
             stage = event.get("stage", "unknown").upper()
             ms = event.get("ms", 0.0)
@@ -51,8 +51,8 @@ class PipelineMetrics:
             blocks = int(ms / 10)
             blocks = min(blocks, 20)
             bar = "■" * blocks
-            print(f"{stage:<15} | {ms:>6.1f}ms | {bar:<20} | {details}")
-        print("=============================\n")
+            _log.info(f"{stage:<15} | {ms:>6.1f}ms | {bar:<20} | {details}")
+        _log.info("=============================")
 
     def log_summary(self):
         _log.info(
