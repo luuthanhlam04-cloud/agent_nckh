@@ -26,7 +26,6 @@ from src.shared.rag_config import get_rag_config
 from src.db.reranker import get_reranker
 from src.db.embeddings import get_embedding
 
-import torch
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -295,7 +294,7 @@ class QdrantManager(IKnowledgeStore):
             self._client.close()
             self._client = None
             logger.info("[Qdrant] Đã đóng kết nối.")
-        if self._model:
+        if hasattr(self, '_model') and self._model:
             del self._model
             self._model = None
             gc.collect()
@@ -314,7 +313,7 @@ class Neo4jManager:
     """
 
     # Danh sách loại Node hợp lệ trong đồ thị (Schema cố định để dễ mở rộng)
-    VALID_NODE_TYPES = {"Concept", "Paper", "Author", "Method", "Finding", "Dataset"}
+    VALID_NODE_TYPES = {"Concept", "Paper", "Author", "Method", "Finding", "Dataset", "Section", "Chunk"}
 
     def __init__(self):
         self._driver: Optional[Driver] = None
@@ -596,6 +595,87 @@ class HybridRAG:
         }
         logger.info(f"[HybridRAG] Nạp xong! Tóm tắt: {summary}")
         return summary
+
+    def ingest_document_dual_write(self, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        [Phase 1 Dual-Write Blueprint]
+        Nạp tài liệu song song vào Qdrant (Vector) và Neo4j (Physical Tree) với $0 API cost.
+        Tự động cấu trúc hóa:
+          - (:Paper {name: source})
+          - (:Section {name: paper::section_title})
+          - (:Chunk {name: chunk_id, preview: ...})
+          - (:Paper)-[:HAS_SECTION]->(:Section)-[:HAS_CHUNK]->(:Chunk)
+        """
+        if not chunks:
+            return {"status": "empty", "chunks_stored": 0}
+
+        chunk_ids = self.qdrant.upsert_chunks(chunks)
+        source_name = chunks[0].get("source", "Document")
+        neo4j_nodes = 0
+
+        try:
+            # 1. Tạo node Paper
+            self.neo4j.upsert_node(
+                node_type="Paper",
+                name=source_name,
+                properties={"total_chunks": len(chunks)},
+                qdrant_chunk_ids=chunk_ids
+            )
+            neo4j_nodes += 1
+
+            # 2. Gom nhóm theo Section
+            sections_map = {}
+            for i, c in enumerate(chunks):
+                cid = chunk_ids[i]
+                sec = c.get("metadata", {}).get("section_title", "General") or "General"
+                if sec not in sections_map:
+                    sections_map[sec] = []
+                sections_map[sec].append((cid, c.get("text", "")[:120]))
+
+            for sec_name, c_list in sections_map.items():
+                sec_node_name = f"{source_name}::{sec_name}"
+                sec_cids = [item[0] for item in c_list]
+                self.neo4j.upsert_node(
+                    node_type="Section",
+                    name=sec_node_name,
+                    properties={"section_title": sec_name, "paper": source_name},
+                    qdrant_chunk_ids=sec_cids
+                )
+                self.neo4j.upsert_relationship(
+                    from_name=source_name,
+                    from_type="Paper",
+                    to_name=sec_node_name,
+                    to_type="Section",
+                    rel_type="HAS_SECTION"
+                )
+                neo4j_nodes += 1
+
+                for cid, preview in c_list:
+                    chunk_node_name = f"Chunk::{cid[:8]}"
+                    self.neo4j.upsert_node(
+                        node_type="Chunk",
+                        name=chunk_node_name,
+                        properties={"preview": preview, "qdrant_id": cid},
+                        qdrant_chunk_ids=[cid]
+                    )
+                    self.neo4j.upsert_relationship(
+                        from_name=sec_node_name,
+                        from_type="Section",
+                        to_name=chunk_node_name,
+                        to_type="Chunk",
+                        rel_type="HAS_CHUNK"
+                    )
+                    neo4j_nodes += 1
+
+        except Exception as e:
+            logger.warning("[HybridRAG] Dual-write Neo4j graceful degradation (offline): %s", e)
+
+        return {
+            "status": "success",
+            "chunks_stored": len(chunk_ids),
+            "neo4j_nodes": neo4j_nodes,
+            "source": source_name
+        }
 
     def retrieve_context(self, query: str, top_k: int = 5, metrics: Any = None) -> List[Dict]:
         """

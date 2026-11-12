@@ -297,16 +297,22 @@ class InboxWatcher:
                 chunks,
             )
 
-            # Bước 3: Nạp vào HybridRAG nếu đã được inject
+            # Bước 3: Nạp vào HybridRAG (Dual-Write Qdrant + Neo4j Physical Tree)
             if self._hybrid_rag:
-                # entities và relationships sẽ được trích xuất bởi LLM trong Giai đoạn 3
-                # Hiện tại nạp chunks thuần để database hoạt động trước
-                await loop.run_in_executor(
-                    None,
-                    self._hybrid_rag.qdrant.upsert_chunks,
-                    chunks,
-                )
-                logger.info(f"[Watchdog] ✅ Đã nạp {len(chunks)} chunks vào Qdrant.")
+                if hasattr(self._hybrid_rag, "ingest_document_dual_write"):
+                    res = await loop.run_in_executor(
+                        None,
+                        self._hybrid_rag.ingest_document_dual_write,
+                        chunks,
+                    )
+                    logger.info(f"[Watchdog] ✅ Đã nạp Dual-Write ({res.get('chunks_stored', len(chunks))} chunks Qdrant, {res.get('neo4j_nodes', 0)} nodes Neo4j).")
+                else:
+                    await loop.run_in_executor(
+                        None,
+                        self._hybrid_rag.qdrant.upsert_chunks,
+                        chunks,
+                    )
+                    logger.info(f"[Watchdog] ✅ Đã nạp {len(chunks)} chunks vào Qdrant.")
             else:
                 logger.warning(
                     "[Watchdog] HybridRAG chưa được inject. "

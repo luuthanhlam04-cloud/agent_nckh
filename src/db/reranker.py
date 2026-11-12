@@ -22,7 +22,7 @@ class VoyageReranker(IReranker):
     """
     Sử dụng Voyage AI API để rerank chunks.
     """
-    def __init__(self, model: str = "voyage-rerank-2"):
+    def __init__(self, model: str = "rerank-2.5"):
         if not VOYAGE_API_KEY:
             logger.warning("[VoyageReranker] VOYAGE_API_KEY chưa được set. Fallback to NoOpReranker.")
             self.fallback = True
