@@ -103,18 +103,24 @@ def init_watcher(hybrid_rag):
 
 def init_core_ai(hybrid_rag):
     """
-    Khoi tao cac thanh phan AI loi.
+    Khoi tao cac thanh phan AI loi voi co che Auto-Failover:
+    Primary: OpenRouterLLMClient
+    Secondary: GeminiLLMClient (gemini-2.5-flash)
     Tra ve tuple (memory, orchestrator).
     """
     from src.core.conversation_memory import ConversationMemory
     from src.core.orchestrator import ReActOrchestrator
     from src.infrastructure.llm.openrouter_client import OpenRouterLLMClient
+    from src.infrastructure.llm.gemini_client import GeminiLLMClient
+    from src.infrastructure.llm.failover_client import FailoverLLMClient
 
     memory = ConversationMemory()
-    worker = OpenRouterLLMClient()
+    primary = OpenRouterLLMClient()
+    secondary = GeminiLLMClient(model="gemini-2.5-flash")
+    worker = FailoverLLMClient(primary=primary, secondary=secondary)
     orchestrator = ReActOrchestrator(hybrid_rag=hybrid_rag, worker=worker)
 
-    logger.info("[Main] ConversationMemory + ReActOrchestrator da san sang.")
+    logger.info("[Main] ConversationMemory + ReActOrchestrator (voi FailoverLLMClient) da san sang.")
     return memory, orchestrator
 
 
