@@ -26,7 +26,10 @@ import os
 import threading
 import time
 import wave
+import collections
 from typing import Optional
+
+from src.ui.silero_vad import SileroVAD
 
 logger = logging.getLogger("VoiceEngine")
 
@@ -40,7 +43,7 @@ MIN_AUDIO_DURATION    = 1.5    # Giay toi thieu (ngay hon bi bo qua)
 RECORD_TIMEOUT_SEC    = 30     # Giay toi da ghi am
 RMS_SPEECH_THRESHOLD  = 300    # Nguong RMS phan biet tieng noi vs tieng on
 GEMINI_STT_MODEL      = "gemini-2.5-flash"
-GEMINI_LIVE_MODEL     = "gemini-2.5-flash"
+GEMINI_LIVE_MODEL     = "gemini-3.1-flash-live-preview"
 
 # ── Singleton lock cho GeminiSTT (batch) ──────────────────────────────────────
 _gemini_stt_lock = threading.Lock()
@@ -93,13 +96,19 @@ class VoiceRecorder:
         self._record_thread: Optional[threading.Thread] = None
         self._on_silence_detected = on_silence_detected
         self._on_chunk = on_chunk  # Sprint 3: callback nhan tung chunk de push real-time
-        logger.info("[VoiceRecorder] Khoi tao xong (pyaudio, %dHz, mono).", AUDIO_SAMPLE_RATE)
+        self._vad = SileroVAD(sample_rate=AUDIO_SAMPLE_RATE, threshold=0.55)
+        frames_per_sec = AUDIO_SAMPLE_RATE / AUDIO_CHUNK_FRAMES
+        self._pre_buffer = collections.deque(maxlen=int(0.5 * frames_per_sec))
+        logger.info("[VoiceRecorder] Khoi tao xong (pyaudio, %dHz, mono, Silero VAD ONNX).", AUDIO_SAMPLE_RATE)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def start_recording(self) -> None:
         """Bat dau thu am non-blocking trong daemon thread."""
         self._frames = []
+        self._pre_buffer.clear()
+        if hasattr(self, '_vad') and self._vad:
+            self._vad.reset()
         self._is_recording = True
         try:
             import pyaudio
@@ -174,10 +183,10 @@ class VoiceRecorder:
     # ── Private ───────────────────────────────────────────────────────────────
 
     def _record_loop(self) -> None:
-        """Thu am lien tuc, phat hien giong noi bang RMS VAD."""
+        """Thu am lien tuc, phat hien giong noi bang Silero VAD (ONNX) voi pre-buffer."""
         frames_per_sec     = AUDIO_SAMPLE_RATE / AUDIO_CHUNK_FRAMES
         max_silence_frames = int(SILENCE_DURATION_SEC * frames_per_sec)
-        min_speech_frames  = int(0.5 * frames_per_sec)
+        min_speech_frames  = int(0.3 * frames_per_sec)
         max_total_frames   = int(RECORD_TIMEOUT_SEC * frames_per_sec)
 
         silence_count: int = 0
@@ -187,13 +196,37 @@ class VoiceRecorder:
         while self._is_recording and self._stream:
             try:
                 data = self._stream.read(AUDIO_CHUNK_FRAMES, exception_on_overflow=False)
-                self._frames.append(data)
-                # Sprint 3: push chunk ngay lap tuc sang GeminiLiveSTT
-                if self._on_chunk:
-                    try:
-                        self._on_chunk(data)
-                    except Exception as _e:
-                        logger.debug("[VoiceRecorder] on_chunk error: %s", _e)
+
+                is_speech = self._vad.is_speech(data) if self._vad else False
+
+                if is_speech:
+                    silence_count = 0
+                    speech_count += 1
+                    if not has_spoken and speech_count >= min_speech_frames:
+                        has_spoken = True
+                        # Đưa 500ms pre-buffer vào đầu để bảo toàn phụ âm đầu câu
+                        for pbf in self._pre_buffer:
+                            self._frames.append(pbf)
+                            if self._on_chunk:
+                                try:
+                                    self._on_chunk(pbf)
+                                except Exception as _e:
+                                    logger.debug("[VoiceRecorder] on_chunk prebuffer error: %s", _e)
+                        logger.info("[VoiceRecorder] Silero VAD phát hiện tiếng nói. Bắt đầu ghi âm.")
+                else:
+                    speech_count = 0
+                    if has_spoken:
+                        silence_count += 1
+                    else:
+                        self._pre_buffer.append(data)
+
+                if has_spoken:
+                    self._frames.append(data)
+                    if self._on_chunk:
+                        try:
+                            self._on_chunk(data)
+                        except Exception as _e:
+                            logger.debug("[VoiceRecorder] on_chunk error: %s", _e)
 
                 if len(self._frames) > max_total_frames:
                     logger.warning("[VoiceRecorder] Timeout %ds. Tu dong ngat mic.", RECORD_TIMEOUT_SEC)
@@ -202,23 +235,9 @@ class VoiceRecorder:
                         self._on_silence_detected()
                     break
 
-                import audioop
-                rms       = audioop.rms(data, AUDIO_FORMAT_WIDTH)
-                is_speech = rms > RMS_SPEECH_THRESHOLD
-
-                if is_speech:
-                    silence_count = 0
-                    speech_count += 1
-                    if speech_count >= min_speech_frames:
-                        has_spoken = True
-                else:
-                    speech_count = 0
-                    if has_spoken:
-                        silence_count += 1
-
                 if has_spoken and silence_count > max_silence_frames:
                     logger.info(
-                        "[VoiceRecorder] Phat hien im lang > %.1fs. Tu dong ngat.",
+                        "[VoiceRecorder] Phat hien im lang > %.1fs sau khi noi. Tu dong ngat.",
                         SILENCE_DURATION_SEC
                     )
                     self._is_recording = False
@@ -485,13 +504,17 @@ class GeminiLiveSTT:
         try:
             self._audio_queue = asyncio.Queue(maxsize=32)
             client = _get_live_client()
+            # gemini-3.1-flash-live-preview là native-audio model:
+            # - Không hỗ trợ response_modalities=["TEXT"]
+            # - Phải bật input_audio_transcription để nhận transcript từ audio input
             config = genai_types.LiveConnectConfig(
-                response_modalities=["TEXT"],
-                system_instruction=(
-                    "Ban la he thong nhan dang giong noi tieng Viet chinh xac. "
-                    "Chi tra ve van ban thuan tu doan audio, khong them giai thich, "
-                    "khong markdown. Neu khong co giong noi, tra ve chuoi rong."
-                ),
+                response_modalities=["AUDIO"],
+                input_audio_transcription=genai_types.AudioTranscriptionConfig(),
+            )
+            logger.info(
+                "[GeminiLiveSTT] Live config: model=%s, response_modalities=['AUDIO'], "
+                "input_audio_transcription=enabled",
+                GEMINI_LIVE_MODEL,
             )
 
             async with client.aio.live.connect(
@@ -593,9 +616,18 @@ class GeminiLiveSTT:
             if self._cancel_token and self._cancel_token.is_cancelled():
                 logger.info("[GeminiLiveSTT] Receiver: cancel token set, dung.")
                 break
-            if response.text:
-                self._transcript_parts.append(response.text)
-                partial_so_far += response.text
+            # Với input_audio_transcription, transcript nằm ở server_content.input_transcription
+            transcription_text = None
+            if hasattr(response, 'server_content') and response.server_content:
+                sc = response.server_content
+                if hasattr(sc, 'input_transcription') and sc.input_transcription:
+                    transcription_text = sc.input_transcription.text
+            # Fallback cho các model hỗ trợ response.text
+            if transcription_text is None and response.text:
+                transcription_text = response.text
+            if transcription_text:
+                self._transcript_parts.append(transcription_text)
+                partial_so_far += transcription_text
                 partial_history.append(partial_so_far)
 
                 # Speculative Retrieval: trigger khi query on dinh
@@ -826,14 +858,15 @@ class GeminiLiveSTT:
         from src.ui.voice_errors import VoiceCancelledError
 
         client = _get_live_client()
+        # Batch mode cũng dùng cùng model native-audio, cần input_audio_transcription
         config = genai_types.LiveConnectConfig(
-            response_modalities=["TEXT"],
-            system_instruction=(
-                "Ban la he thong nhan dang giong noi tieng Viet chinh xac. "
-                "Chi tra ve van ban thuan tu doan audio, khong them giai thich, "
-                "khong markdown, khong dau ngoac kep. "
-                "Neu khong co giong noi hoac am thanh qua ngan, tra ve chuoi rong."
-            ),
+            response_modalities=["AUDIO"],
+            input_audio_transcription=genai_types.AudioTranscriptionConfig(),
+        )
+        logger.info(
+            "[GeminiLiveSTT] Batch config: model=%s, response_modalities=['AUDIO'], "
+            "input_audio_transcription=enabled",
+            GEMINI_LIVE_MODEL,
         )
 
         transcript = ""
@@ -847,8 +880,15 @@ class GeminiLiveSTT:
             async for response in session.receive():
                 if cancel_token and cancel_token.is_cancelled():
                     raise VoiceCancelledError("User huy trong receive loop")
-                if response.text:
-                    transcript += response.text
+                transcription_text = None
+                if hasattr(response, 'server_content') and response.server_content:
+                    sc = response.server_content
+                    if hasattr(sc, 'input_transcription') and sc.input_transcription:
+                        transcription_text = sc.input_transcription.text
+                if transcription_text is None and response.text:
+                    transcription_text = response.text
+                if transcription_text:
+                    transcript += transcription_text
 
         return transcript.strip()
 
