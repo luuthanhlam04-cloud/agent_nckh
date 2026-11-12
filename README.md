@@ -1,21 +1,28 @@
-# Digital Scholar (Agent V5.0)
+# Digital Scholar (Personal Research Cockpit V6.0)
 
 ## 1. Project Overview
 
-**Digital Scholar** là một trợ lý nghiên cứu học thuật chạy nền (Background Daemon) dành riêng cho hệ điều hành **Windows 10/11**. Dự án tập trung giải quyết bài toán số hóa, quản lý và truy xuất thông tin từ kho tài liệu khoa học cá nhân (PDF, PPTX) mà không phá vỡ luồng làm việc của người dùng. Hệ thống kết hợp kiến trúc Clean Architecture chặt chẽ với nền tảng Hybrid Retrieval (Truy xuất lai).
+**Digital Scholar** là một trợ lý cá nhân và đối tác nghiên cứu học thuật chạy nền (Background Daemon) dành riêng cho hệ điều hành **Windows 10/11**. Dự án kết hợp hài hòa hai nhu cầu thiết yếu:
+1. **Desktop Personal Assistant:** Thao tác máy tính mượt mà (YouTube, Volume, App, Ghi chú, Spotlight) với độ trễ dưới 1ms, chi phí $0 API và tương tác giọng nói hoàn toàn rảnh tay (Hands-free).
+2. **Socratic Research Cockpit:** Không chỉ tóm tắt tài liệu thụ động mà đóng vai trò đối tác tư duy phản biện học thuật (Socratic Thought Partner), hỗ trợ bóc tách các giả định ngầm (implicit assumptions) và phát hiện điểm nghẽn (bottlenecks) giữa các công trình nghiên cứu.
 
 **Why Digital Scholar?**
 - *Traditional desktop search* ➔ Lexical Search ➔ No reasoning ➔ No academic context
-- *Digital Scholar* ➔ Semantic Retrieval ➔ Graph Retrieval ➔ AI Reasoning
+- *Standard Chatbot* ➔ Thụ động hỏi gì đáp nấy ➔ Ảo giác khi thiếu liên kết đồ thị
+- *Digital Scholar* ➔ Dual-Write KR&R ➔ Silero VAD Voice ➔ Socratic Thought Partner
+
+---
 
 ## 2. Key Capabilities
 
-- ✔ Desktop AI Assistant
-- ✔ Background Document Indexing
-- ✔ Hybrid Retrieval Pipeline
-- ✔ Voice Interface
-- ✔ Clean Architecture
-- ✔ Plug-and-Play LLM Providers
+- ✔ **Hands-free Voice Interface:** Tích hợp **Silero VAD (ONNX)** chạy local CPU (<2MB), hỗ trợ Pre-speech Ring Buffer (500ms) và Trailing Silence (1.5s) để thoại rảnh tay tự động không cần bấm phím.
+- ✔ **Hybrid Intent Sniffer & Vietnamese Stopword Stripper:** Bóc tách chính xác câu lệnh văn nói lộn xộn, lọc sạch 100% từ đệm rác để điều khiển YouTube, Âm lượng, Ứng dụng ở tầng 0 ($0 API, <1ms).
+- ✔ **Dual-Write Architecture (Qdrant + Neo4j):** Đồng bộ song song vector chunks vào Qdrant và cây cấu trúc tài liệu (`:Paper -> :Section -> :Chunk`) vào Neo4j với $0 API, bẻ gãy hoàn toàn "Bẫy tái chỉ mục" (Re-indexing Trap).
+- ✔ **Failover LLM Client & Cost Guard:** Tự động chuyển vùng dự phòng từ OpenRouter sang Gemini Direct (`gemini-2.5-flash`) khi gặp lỗi hạn ngạch HTTP 402/403/429, duy trì chi phí hoạt động chỉ từ $1 - $3/tháng.
+- ✔ **Socratic Thought Partner & Obsidian Research Journal:** Tự động chêm gợi ý phản biện Socratic khi tra cứu nghiên cứu và lưu trữ Research Gaps vào `Obsidian_Vault/05_Research_Journal/YYYY-MM-DD.md`.
+- ✔ **AST-based Architecture Police:** Kiểm tra tuân thủ Clean Architecture tự động bằng Abstract Syntax Tree qua `production_check.py`.
+
+---
 
 ## 3. Quick Start
 
@@ -26,153 +33,130 @@
 git clone <repo_url>
 cd agent_nckh
 
-# 2. Tạo môi trường ảo và cài đặt dependencies
+# 2. Tạo môi trường ảo và kích hoạt
 python -m venv venv
 venv\Scripts\activate
+
+# 3. Cài đặt dependencies
 pip install -r requirements.txt
 
-# 3. Khởi tạo biến môi trường (.env)
-# Yêu cầu: GEMINI_API_KEY, OPENROUTER_API_KEY, NEO4J_URI...
+# 4. Kiểm tra cấu hình .env
+# Điền GEMINI_API_KEY, OPENROUTER_API_KEY, NEO4J_URI...
 
-# 4. Chạy hệ thống (Chạy với quyền Administrator để bắt hotkey)
+# 5. Chạy kiểm tra tĩnh và kiểm thử hệ thống
+python production_check.py
+
+# 6. Khởi động hệ thống (Chạy quyền Administrator để bắt hotkey)
 python main.py
 ```
 
+---
+
 ## 4. System Architecture
 
-Hệ thống tuân thủ **Clean Architecture**, phân lớp luồng dữ liệu (Dependency Direction) nghiêm ngặt từ ngoài vào trong lõi.
+Hệ thống tuân thủ **Clean Architecture** đa tầng:
 
 ```mermaid
-flowchart LR
-    User([Người dùng]) -->|Hotkey/Text| UI[Spotlight UI]
-    UI -->|Async Signal| Coord[Semantic Interceptor]
-    Coord -->|State Machine| Orch[ReAct Orchestrator]
-    
-    Orch -->|Search| Retr[Hybrid Retriever]
-    Retr -->|Dense Vector| Qdrant[(Qdrant)]
-    Retr -->|Graph Query| Neo4j[(Neo4j)]
-    
-    Qdrant -.->|Dense Evidence| Retr
-    Neo4j -.->|Graph Evidence| Retr
-    
-    Retr -.->|Context| Orch
-    Orch -->|Prompt| LLM[LLM Engine]
-    LLM -->|Streaming| UI
+flowchart TD
+    subgraph UI ["Giao Diện & Nhập Liệu"]
+        MIC["Microphone (16kHz)"] --> VAD["Silero VAD (ONNX Local)"]
+        VAD -->|"500ms Pre-buffer"| STT["Gemini Live / Flash STT"]
+        STT --> INPUT["User Input Query"]
+        SPOTLIGHT["Spotlight Search UI (Alt+Space)"] --> INPUT
+    end
+
+    subgraph ROUTER ["Điều Phối & Phân Tuyến"]
+        INPUT --> SNIFFER["Hybrid Intent Sniffer & Stopword Stripper"]
+        SNIFFER -->|"Desktop Command ($0, <1ms)"| OS_EXEC["OS Service (Volume, App, YouTube, Time)"]
+        SNIFFER -->|"Research / Daily Chat"| INTERCEPTOR["Semantic Interceptor"]
+        INTERCEPTOR --> COORD["RequestCoordinator + FailoverLLMClient"]
+    end
+
+    subgraph LLM ["Hạ Tầng Suy Luận"]
+        COORD -->|"Primary"| OPENROUTER["OpenRouter"]
+        COORD -->|"Failover"| GEMINI_FLASH["Gemini 2.5 Flash ($0.075/1M)"]
+        COORD --> SOCRATIC["Socratic Thought Partner"]
+    end
+
+    subgraph KR ["Biểu Diễn Tri Thức (Dual-Write KR&R)"]
+        INBOX["01_Inbox/ (Watchdog Listener)"] --> DUAL["Dual-Write Ingestion"]
+        DUAL -->|"Vector Chunks"| QDRANT[("Qdrant Local Vector DB")]
+        DUAL -->|"Physical Tree ($0 API)"| NEO4J[("Neo4j Graph Database")]
+        SOCRATIC --> JOURNAL["Obsidian Vault / 05_Research_Journal/"]
+    end
 ```
+
+---
 
 ## 5. Technology Stack
 
-| Layer | Technology |
-|---|---|
-| **UI** | PyQt6 |
-| **LLM** | Gemini / OpenRouter |
-| **Vector DB** | Qdrant |
-| **Graph DB** | Neo4j Aura |
-| **Embedding** | multilingual-e5-base |
-| **STT Voice** | Gemini Flash API (In-memory PCM) |
-| **Document Parser** | PyMuPDF, python-pptx |
+| Layer | Technology | Vai trò |
+|---|---|---|
+| **UI** | PyQt6 | Spotlight Search Window, System Tray, Global Hotkey |
+| **Voice VAD** | Silero VAD v6 (ONNX Runtime) | Voice Activity Detection local CPU, Pre-buffer 500ms |
+| **STT Voice** | Gemini 3.1 Flash Live / 2.5 Flash | Nhận diện giọng nói tiếng Việt in-memory PCM |
+| **Routing** | HybridIntentSniffer + SemanticInterceptor | Regex Co-occurrence, Stopword Stripper, e5-base anchors |
+| **LLM Inference** | FailoverLLMClient (OpenRouter + Gemini Direct) | Suy luận tự động chuyển vùng, chống lỗi 403 quota |
+| **Vector DB** | Qdrant Local | Lưu trữ dense vectors & micro-chunks |
+| **Graph DB** | Neo4j Aura Cloud / Local | Cây cấu trúc tài liệu (`:Paper -> :Section -> :Chunk`) |
+| **Knowledge Vault** | Obsidian Markdown Vault | Lưu trữ ghi chú dài hạn & Research Journal |
+| **Linter / Police** | AST Custom Rules (Tier A, B, C) | Tự động bảo vệ Clean Architecture |
 
-## 6. High-level Pipelines
+---
 
-**1. Query Processing Flow (Luồng hệ thống cốt lõi)**
-Dưới đây là vòng đời của một truy vấn từ người dùng tới khi sinh ra văn bản trả lời (streaming):
+## 6. Testing & Quality Assurance
 
-`User ➔ Spotlight UI ➔ Semantic Interceptor ➔ ReAct Orchestrator ➔ Hybrid Retriever ➔ LLM ➔ Streaming UI`
+Hệ thống được bảo vệ bởi bộ kiểm thử 2 pha toàn diện:
 
-**2. Background Document Indexing Pipeline**
-Luồng tự động chạy ngầm khi phát hiện tài liệu mới trong thư mục Inbox:
+- **Phase 1: Static Analysis (`production_check.py`)**: Quét AST toàn bộ mã nguồn `src/` và `main.py` để đảm bảo 0 vi phạm Tier A (không có bare except, thuần router, không vi phạm chiều phụ thuộc).
+- **Phase 2: Dynamic Tests (`run_tests.py` & `tests/`)**:
+  - `run_tests.py`: 51/51 integration tests vượt qua (Memory, Interceptor, Orchestrator, Qdrant, Parser, Watchdog, UI, Pipeline).
+  - `tests/`: 20/20 unit tests vượt qua (Intent Sniffer, Silero VAD, Research Journal, Tier AST Rules).
+  - **Tổng cộng: 71/71 tests (100% Pass Rate).**
 
-```mermaid
-flowchart LR
-    Inbox[Inbox] --> Parser[Document Parser]
-    Parser --> Chunker[Parent-Child Chunker]
-    Chunker --> Embed[Embedding]
-    Embed --> Qdrant[(Qdrant)]
-    Chunker --> NER[Zero-shot NER]
-    NER --> Neo4j[(Neo4j)]
-```
+---
 
-*(Chi tiết về thuật toán RAG, Parent-Child Chunking và Voice Pipeline, xem tại [Engineering Handbook](docs/engineering/pipelines.md))*
-
-## 7. Key Technical Contributions
-
-Dự án mang lại các đóng góp kỹ thuật thực tiễn sau:
-- **Integration of Parent-Child Chunking** vào một luồng Hybrid Academic RAG để cân bằng giữa độ chính xác truy xuất (Vector Search) và độ trọn vẹn ngữ cảnh.
-- **Hybrid Retrieval Pipeline** kết hợp dense retrieval (Qdrant) với graph evidence (Neo4j) để giải quyết các truy vấn mang tính liên kết logic.
-- **Adaptive Retrieval Loop** đưa Agent tự đánh giá (Self-Critique) chất lượng của tập dữ liệu ngữ cảnh thu hồi được trước khi sinh câu trả lời, giảm thiểu ảo giác.
-- **Utilization of Lightweight LLMs for Zero-shot Entity Extraction** để tự động bóc tách thực thể trong tiến trình Background Indexing.
-- **AST-based Architecture Validation** quét mã nguồn bằng Abstract Syntax Tree (AST) để tự động bảo vệ nguyên lý Clean Architecture trong một dự án AI Research.
-
-## 8. Current Status & Roadmap
-
-- **Phiên bản hiện tại:** V5.0
-
-**Implemented Features:**
-- Hybrid indexing pipeline
-- Hybrid retriever foundation
-- Graph extraction pipeline
-- Spotlight UI and Voice Interface
-- AST-based architecture validation
-
-**Current Limitations:**
-- *Graph evidence fusion into generation is still under refinement*: Luồng truy xuất hiện tại đã lấy được dữ liệu Graph nhưng cần tinh chỉnh thêm prompt tổng hợp để LLM sử dụng dữ liệu này hiệu quả nhất.
-- Chưa có OCR cho các tài liệu PDF scan dưới dạng hình ảnh.
-
-**Planned:**
-- Tích hợp Pytest-qt cho UI Testing tự động.
-- Áp dụng Local LLM thay thế hoàn toàn API đám mây.
-- Bổ sung Vision Mode để phân tích biểu đồ khoa học.
-
-## 9. Repository Structure
+## 7. Repository Structure
 
 ```text
 agent_nckh/
-├── main.py                     (Composition Root)
-├── production_check.py         (AST-based architecture validation tool)
-├── run_tests.py                (Automated Test Runner)
+├── main.py                     (Composition Root & Application Entry)
+├── production_check.py         (AST Architecture Police & Static Analysis)
+├── run_tests.py                (Integration Test Runner - 51 tests)
+├── tests/                      (Unit Test Suites - 20 tests)
+│   ├── test_intent_sniffer.py  (Lọc từ đệm văn nói & Desktop routing)
+│   ├── test_silero_vad.py      (Silero VAD ONNX detection)
+│   ├── test_research_journal.py(Obsidian Gap recording & Socratic prompt)
+│   └── test_tier_*.py          (Architecture Linter Rules)
 ├── src/
 │   ├── core/                   (Application Layer)
-│   │   ├── orchestrator.py     (ReAct state machine)
-│   │   ├── interfaces.py       (Abstract base classes)
+│   │   ├── coordinator.py      (Request Coordinator & Socratic injection)
+│   │   ├── intent_sniffer.py   (Hybrid Intent Sniffer & Stopword Stripper)
+│   │   ├── orchestrator.py     (ReAct state machine & Self-critique)
 │   │   └── semantic_interceptor.py
 │   ├── infrastructure/         (Infrastructure Layer)
-│   │   ├── gemini_client.py    (LLM & STT adapters)
+│   │   ├── failover_client.py  (Auto-Failover LLM Client)
+│   │   ├── gemini_client.py    (Gemini Direct SDK Adapter)
 │   │   └── openrouter_client.py
 │   ├── db/                     (Database Layer)
-│   │   ├── hybrid_rag.py       (Qdrant & Neo4j orchestration)
-│   │   └── nckh_retriever.py   (Parent-Child retrieval logic)
+│   │   ├── hybrid_rag.py       (Dual-Write Qdrant & Neo4j Physical Tree)
+│   │   └── reranker.py         (Voyage AI Reranker)
+│   ├── services/               (Services Layer)
+│   │   ├── research_journal.py (Obsidian Research Journaling)
+│   │   ├── docx_exporter.py    (Xuất báo cáo Word)
+│   │   └── daily/              (OS, Media, Workspace controllers)
 │   ├── ui/                     (Presentation Layer)
-│   │   ├── spotlight.py        (PyQt6 UI)
-│   │   └── workers.py          (QThread handlers)
-│   └── shared/                 (Foundation Layer)
-├── docs/                       (Tài liệu kiến trúc, ADRs)
-└── rules/                      (Tập luật A/B/C)
+│   │   ├── spotlight.py        (Spotlight Search UI)
+│   │   ├── silero_vad.py       (Silero VAD ONNX Engine)
+│   │   └── voice_engine.py     (Voice Recorder & Gemini Live STT)
+│   ├── utils/                  (Parsing & Watchdog Layer)
+│   │   ├── parser.py           (C5 Prefix & Heading-aware PDF/PPTX Parser)
+│   │   └── watchdog_listener.py(Giám sát 01_Inbox/ & Auto Dual-Write)
+│   └── shared/                 (Foundation Layer: Config, Settings, Metrics)
+├── Obsidian_Vault/             (Personal Knowledge Vault)
+│   ├── 01_Inbox/               (Thư mục thả tài liệu mới)
+│   ├── 02_Knowledge/           (Kho tài liệu đã xử lý)
+│   ├── 03_Agent_Memory/        (Hồ sơ cá nhân & Trí nhớ dài hạn)
+│   └── 05_Research_Journal/    (Nhật ký lỗ hổng nghiên cứu YYYY-MM-DD.md)
+└── docs/                       (Tài liệu kiến trúc, ADRs, Roadmaps)
 ```
-
-## 10. Design Philosophy
-
-Dự án được xây dựng dựa trên các triết lý kỹ thuật nghiêm ngặt:
-- **Modular rather than monolithic:** Chia nhỏ hệ thống thành các module độc lập.
-- **Replaceable LLM providers:** Không phụ thuộc vào một hãng AI cố định, giao tiếp qua Abstract Interfaces.
-- **Offline-first indexing:** Việc bóc tách và phân loại tài liệu diễn ra tự động ở chế độ nền.
-- **Deterministic retrieval:** Truy xuất dữ liệu có thể lặp lại và kiểm chứng được.
-- **Testability over convenience:** Ưu tiên khả năng viết Unit Test thay vì code nhanh cẩu thả.
-- **Separation between orchestration and infrastructure:** Lõi điều phối (ReAct) hoàn toàn cách ly khỏi cơ sở hạ tầng (DB, HTTP Clients).
-
-## 11. Development Workflow
-
-Dự án áp dụng quy trình phát triển kỹ thuật chặt chẽ:
-`Design (ADR) ➔ Implementation ➔ production_check.py ➔ run_tests.py ➔ Commit`
-
-- Mọi quyết định thay đổi hệ thống đều phải lập văn bản **ADR** (Architecture Decision Record).
-- Giao tiếp qua **Abstract Interfaces** (Dependency Inversion), cấm khởi tạo service ngoại vi bên trong core.
-- `production_check.py` đóng vai trò kiểm duyệt Abstract Syntax Tree (AST) để báo lỗi nếu import sai luồng.
-- `run_tests.py` thực thi 51 bài test trước mỗi commit.
-
-## 12. Technical Documentation
-
-Toàn bộ các quyết định thiết kế chi tiết, thông số thuật toán, và hướng dẫn bảo trì đã được tách ra khỏi README và nằm trong thư mục `docs/`.
-
-- [Engineering Principles & Rule Engine](docs/engineering/principles.md)
-- [Pipeline Algorithms (RAG, Chunking, Voice)](docs/engineering/pipelines.md)
-- [Architecture Decision Records (ADRs)](docs/adr/)
